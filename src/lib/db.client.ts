@@ -66,6 +66,9 @@ interface UserCacheStore {
   favorites?: CacheData<Record<string, Favorite>>;
   searchHistory?: CacheData<string[]>;
   skipConfigs?: CacheData<Record<string, SkipConfig>>;
+  // 新增豆瓣数据缓存
+  doubanDetails?: CacheData<Record<string, any>>;
+  doubanLists?: CacheData<Record<string, any>>;
 }
 
 // ---- 常量 ----
@@ -77,6 +80,12 @@ const SEARCH_HISTORY_KEY = 'moontv_search_history';
 const CACHE_PREFIX = 'moontv_cache_';
 const CACHE_VERSION = '1.0.0';
 const CACHE_EXPIRE_TIME = 60 * 60 * 1000; // 一小时缓存过期
+
+// 豆瓣数据专用缓存过期时间
+const DOUBAN_CACHE_EXPIRE = {
+  details: 4 * 60 * 60 * 1000,  // 详情4小时（变化较少）
+  lists: 2 * 60 * 60 * 1000,   // 列表2小时（更新频繁）
+};
 
 // ---- 环境变量 ----
 const STORAGE_TYPE = (() => {
@@ -187,6 +196,16 @@ class HybridCacheManager {
     // 清理过期的收藏缓存
     if (cache.favorites && now - cache.favorites.timestamp > maxAge) {
       delete cache.favorites;
+    }
+
+    // 清理过期的豆瓣详情缓存
+    if (cache.doubanDetails && now - cache.doubanDetails.timestamp > DOUBAN_CACHE_EXPIRE.details) {
+      delete cache.doubanDetails;
+    }
+
+    // 清理过期的豆瓣列表缓存
+    if (cache.doubanLists && now - cache.doubanLists.timestamp > DOUBAN_CACHE_EXPIRE.lists) {
+      delete cache.doubanLists;
     }
   }
 
@@ -391,6 +410,119 @@ class HybridCacheManager {
     } catch (error) {
       console.warn('清除过期缓存失败:', error);
     }
+  }
+
+  // ---- 豆瓣数据缓存方法 ----
+
+  /**
+   * 检查豆瓣缓存是否有效（使用专门的过期时间）
+   */
+  private isDoubanCacheValid<T>(cache: CacheData<T>, type: 'details' | 'lists'): boolean {
+    const now = Date.now();
+    const expireTime = type === 'details' ? DOUBAN_CACHE_EXPIRE.details : DOUBAN_CACHE_EXPIRE.lists;
+    return (
+      cache.version === CACHE_VERSION &&
+      now - cache.timestamp < expireTime
+    );
+  }
+
+  /**
+   * 获取豆瓣详情缓存
+   */
+  getDoubanDetails(id: string): any | null {
+    const username = this.getCurrentUsername();
+    if (!username) return null;
+
+    const userCache = this.getUserCache(username);
+    const cached = userCache.doubanDetails;
+    
+    if (cached && this.isDoubanCacheValid(cached, 'details')) {
+      return cached.data[id] || null;
+    }
+    return null;
+  }
+
+  /**
+   * 保存豆瓣详情缓存
+   */
+  setDoubanDetails(id: string, data: any): void {
+    const username = this.getCurrentUsername();
+    if (!username) return;
+
+    const userCache = this.getUserCache(username);
+    
+    if (!userCache.doubanDetails) {
+      userCache.doubanDetails = {
+        data: {},
+        timestamp: Date.now(),
+        version: CACHE_VERSION
+      };
+    }
+
+    userCache.doubanDetails.data[id] = data;
+    userCache.doubanDetails.timestamp = Date.now();
+    
+    this.saveUserCache(username, userCache);
+  }
+
+  /**
+   * 获取豆瓣列表缓存
+   */
+  getDoubanList(cacheKey: string): any | null {
+    const username = this.getCurrentUsername();
+    if (!username) return null;
+
+    const userCache = this.getUserCache(username);
+    const cached = userCache.doubanLists;
+    
+    if (cached && this.isDoubanCacheValid(cached, 'lists')) {
+      return cached.data[cacheKey] || null;
+    }
+    return null;
+  }
+
+  /**
+   * 保存豆瓣列表缓存
+   */
+  setDoubanList(cacheKey: string, data: any): void {
+    const username = this.getCurrentUsername();
+    if (!username) return;
+
+    const userCache = this.getUserCache(username);
+    
+    if (!userCache.doubanLists) {
+      userCache.doubanLists = {
+        data: {},
+        timestamp: Date.now(),
+        version: CACHE_VERSION
+      };
+    }
+
+    userCache.doubanLists.data[cacheKey] = data;
+    userCache.doubanLists.timestamp = Date.now();
+    
+    this.saveUserCache(username, userCache);
+  }
+
+  /**
+   * 生成豆瓣列表缓存键
+   */
+  static generateDoubanListKey(type: string, tag: string, pageStart: number, pageSize: number): string {
+    return `${type}:${tag}:${pageStart}:${pageSize}`;
+  }
+
+  /**
+   * 清除豆瓣缓存
+   */
+  clearDoubanCache(): void {
+    const username = this.getCurrentUsername();
+    if (!username) return;
+
+    const userCache = this.getUserCache(username);
+    delete userCache.doubanDetails;
+    delete userCache.doubanLists;
+    
+    this.saveUserCache(username, userCache);
   }
 }
 
@@ -1655,4 +1787,57 @@ export async function deleteSkipConfig(
     triggerGlobalError('删除跳过片头片尾配置失败');
     throw err;
   }
+}
+
+// ---- 豆瓣数据缓存导出函数 ----
+
+/**
+ * 获取豆瓣详情缓存
+ * @param id 豆瓣ID
+ * @returns 缓存的详情数据或null
+ */
+export function getDoubanDetailsCache(id: string): any | null {
+  return cacheManager.getDoubanDetails(id);
+}
+
+/**
+ * 保存豆瓣详情缓存
+ * @param id 豆瓣ID
+ * @param data 详情数据
+ */
+export function setDoubanDetailsCache(id: string, data: any): void {
+  cacheManager.setDoubanDetails(id, data);
+}
+
+/**
+ * 获取豆瓣列表缓存
+ * @param type 类型 (tv/movie)
+ * @param tag 标签
+ * @param pageStart 页面起始位置
+ * @param pageSize 页面大小
+ * @returns 缓存的列表数据或null
+ */
+export function getDoubanListCache(type: string, tag: string, pageStart: number, pageSize: number): any | null {
+  const cacheKey = HybridCacheManager.generateDoubanListKey(type, tag, pageStart, pageSize);
+  return cacheManager.getDoubanList(cacheKey);
+}
+
+/**
+ * 保存豆瓣列表缓存
+ * @param type 类型 (tv/movie) 
+ * @param tag 标签
+ * @param pageStart 页面起始位置
+ * @param pageSize 页面大小
+ * @param data 列表数据
+ */
+export function setDoubanListCache(type: string, tag: string, pageStart: number, pageSize: number, data: any): void {
+  const cacheKey = HybridCacheManager.generateDoubanListKey(type, tag, pageStart, pageSize);
+  cacheManager.setDoubanList(cacheKey, data);
+}
+
+/**
+ * 清除所有豆瓣缓存
+ */
+export function clearDoubanCache(): void {
+  cacheManager.clearDoubanCache();
 }

@@ -38,6 +38,7 @@ export async function GET(request: Request) {
   const target = `https://movie.douban.com/subject/${id}/`;
 
   try {
+
     // 请求限流：确保请求间隔
     const now = Date.now();
     const timeSinceLastRequest = now - lastRequestTime;
