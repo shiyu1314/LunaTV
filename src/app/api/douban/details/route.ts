@@ -1,42 +1,25 @@
 import { NextResponse } from 'next/server';
 
 import { getCacheTime } from '@/lib/config';
-import { fetchDoubanData } from '@/lib/douban';
 
-interface DoubanDetailResponse {
-  id: string;
-  title: string;
-  poster: string;
-  rating?: {
-    average: number;
-    details?: { [key: string]: number };
-    max: number;
-    min: number;
-    stars: string;
-  };
-  year: string;
-  pubdates: string[];
-  directors: Array<{
-    id: string;
-    name: string;
-    alt: string;
-  }>;
-  writers: Array<{
-    id: string;
-    name: string;
-    alt: string;
-  }>;
-  casts: Array<{
-    id: string;
-    name: string;
-    alt: string;
-  }>;
-  genres: string[];
-  countries: string[];
-  languages: string[];
-  episodes_count?: number;
-  durations: string[];
-  summary: string;
+// 用户代理池
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+];
+
+// 请求限制器
+let lastRequestTime = 0;
+const MIN_REQUEST_INTERVAL = 2000; // 2秒最小间隔
+
+function getRandomUserAgent(): string {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+function randomDelay(min = 1000, max = 3000): Promise<void> {
+  const delay = Math.floor(Math.random() * (max - min + 1)) + min;
+  return new Promise(resolve => setTimeout(resolve, delay));
 }
 
 export const runtime = 'nodejs';
@@ -55,16 +38,38 @@ export async function GET(request: Request) {
   const target = `https://movie.douban.com/subject/${id}/`;
 
   try {
+    // 请求限流：确保请求间隔
+    const now = Date.now();
+    const timeSinceLastRequest = now - lastRequestTime;
+    if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
+      await new Promise(resolve => 
+        setTimeout(resolve, MIN_REQUEST_INTERVAL - timeSinceLastRequest)
+      );
+    }
+    lastRequestTime = Date.now();
+
+    // 添加随机延时
+    await randomDelay(500, 1500);
+
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
 
     const fetchOptions = {
       signal: controller.signal,
       headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Referer': 'https://movie.douban.com/',
+        'User-Agent': getRandomUserAgent(),
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Cache-Control': 'max-age=0',
+        // 随机添加Referer
+        ...(Math.random() > 0.5 ? { 'Referer': 'https://www.douban.com/' } : {}),
       },
     };
 
