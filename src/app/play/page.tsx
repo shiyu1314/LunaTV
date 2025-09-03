@@ -335,12 +335,64 @@ function PlayPageClient() {
     return id > 0 && id.toString().length === 6;
   };
 
-  // 获取bangumi详情
+  // bangumi缓存配置
+  const BANGUMI_CACHE_EXPIRE = 4 * 60 * 60 * 1000; // 4小时，和douban详情一致
+
+  // bangumi缓存工具函数
+  const getBangumiCache = (id: number) => {
+    if (typeof localStorage === 'undefined') return null;
+    
+    try {
+      const cacheKey = `bangumi-details-${id}`;
+      const cached = localStorage.getItem(cacheKey);
+      if (!cached) return null;
+      
+      const { data, expire } = JSON.parse(cached);
+      if (Date.now() > expire) {
+        localStorage.removeItem(cacheKey);
+        return null;
+      }
+      
+      return data;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const setBangumiCache = (id: number, data: any) => {
+    if (typeof localStorage === 'undefined') return;
+    
+    try {
+      const cacheKey = `bangumi-details-${id}`;
+      const cacheData = {
+        data,
+        expire: Date.now() + BANGUMI_CACHE_EXPIRE,
+        created: Date.now()
+      };
+      localStorage.setItem(cacheKey, JSON.stringify(cacheData));
+    } catch (e) {
+      console.warn('Failed to cache bangumi details:', e);
+    }
+  };
+
+  // 获取bangumi详情（带缓存）
   const fetchBangumiDetails = async (bangumiId: number) => {
+    // 检查缓存
+    const cached = getBangumiCache(bangumiId);
+    if (cached) {
+      console.log(`Bangumi详情缓存命中: ${bangumiId}`);
+      return cached;
+    }
+
     try {
       const response = await fetch(`https://api.bgm.tv/v0/subjects/${bangumiId}`);
       if (response.ok) {
         const bangumiData = await response.json();
+        
+        // 保存到缓存
+        setBangumiCache(bangumiId, bangumiData);
+        console.log(`Bangumi详情已缓存: ${bangumiId}`);
+        
         return bangumiData;
       }
     } catch (error) {
