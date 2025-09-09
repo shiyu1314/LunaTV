@@ -326,22 +326,50 @@ function rewriteM3U8Content(content: string, baseUrl: string, req: Request, allo
       line = rewriteDateRangeUri(line, baseUrl, proxyBase, variables);
     }
 
+    // 处理预加载提示 (EXT-X-PRELOAD-HINT)
+    if (line.startsWith('#EXT-X-PRELOAD-HINT:')) {
+      line = rewritePreloadHintUri(line, baseUrl, proxyBase, variables);
+    }
+
+    // 处理渲染报告 (EXT-X-RENDITION-REPORT)
+    if (line.startsWith('#EXT-X-RENDITION-REPORT:')) {
+      line = rewriteRenditionReportUri(line, baseUrl, proxyBase, variables);
+    }
+
+    // 处理服务器控制 (EXT-X-SERVER-CONTROL)
+    if (line.startsWith('#EXT-X-SERVER-CONTROL:')) {
+      line = rewriteServerControlUri(line, baseUrl, proxyBase, variables);
+    }
+
+    // 处理跳过片段 (EXT-X-SKIP)
+    if (line.startsWith('#EXT-X-SKIP:')) {
+      line = rewriteSkipUri(line, baseUrl, proxyBase, variables);
+    }
+
     rewrittenLines.push(line);
   }
 
   return rewrittenLines.join('\n');
 }
 
-// 变量替换函数
+// 变量替换函数 - 参考 hls.js 标准实现
+const VARIABLE_REPLACEMENT_REGEX = /\{\$([a-zA-Z0-9-_]+)\}/g;
+
 function substituteVariables(text: string, variables: Map<string, string>): string {
-  let result = text;
-  // 使用 Array.from() 来避免迭代器问题
-  const variableEntries = Array.from(variables.entries());
-  for (const [name, value] of variableEntries) {
-    const pattern = new RegExp(`\\{\\$${name}\\}`, 'g');
-    result = result.replace(pattern, value);
+  if (variables.size === 0) {
+    return text;
   }
-  return result;
+  
+  return text.replace(VARIABLE_REPLACEMENT_REGEX, (variableReference: string, variableName: string) => {
+    const variableValue = variables.get(variableName);
+    if (variableValue === undefined) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn(`Missing variable definition for: "${variableName}"`);
+      }
+      return variableReference; // 保持原始引用如果变量未定义
+    }
+    return variableValue;
+  });
 }
 
 // 处理变量定义
@@ -501,4 +529,76 @@ function rewriteDateRangeUri(line: string, baseUrl: string, proxyBase: string, v
   }
   
   return result;
+}
+
+// 处理预加载提示 - LL-HLS 功能
+function rewritePreloadHintUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>): string {
+  const uriMatch = line.match(/URI="([^"]+)"/);
+  if (uriMatch) {
+    let originalUri = uriMatch[1];
+    if (variables) {
+      originalUri = substituteVariables(originalUri, variables);
+    }
+    
+    try {
+      const resolvedUrl = resolveUrl(baseUrl, originalUri);
+      // 根据 TYPE 属性选择适当的代理端点
+      const typeMatch = line.match(/TYPE=([^,\s]+)/);
+      const type = typeMatch ? typeMatch[1] : 'PART';
+      
+      let proxyUrl: string;
+      if (type === 'PART') {
+        proxyUrl = `${proxyBase}/segment?url=${encodeURIComponent(resolvedUrl)}`;
+      } else if (type === 'MAP') {
+        proxyUrl = `${proxyBase}/segment?url=${encodeURIComponent(resolvedUrl)}`;
+      } else {
+        proxyUrl = `${proxyBase}/segment?url=${encodeURIComponent(resolvedUrl)}`;
+      }
+      
+      return line.replace(uriMatch[0], `URI="${proxyUrl}"`);
+    } catch (error) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('解析预加载提示URI失败:', originalUri, error);
+      }
+      return line;
+    }
+  }
+  return line;
+}
+
+// 处理渲染报告
+function rewriteRenditionReportUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>): string {
+  const uriMatch = line.match(/URI="([^"]+)"/);
+  if (uriMatch) {
+    let originalUri = uriMatch[1];
+    if (variables) {
+      originalUri = substituteVariables(originalUri, variables);
+    }
+    
+    try {
+      const resolvedUrl = resolveUrl(baseUrl, originalUri);
+      const proxyUrl = `${proxyBase}/m3u8?url=${encodeURIComponent(resolvedUrl)}`;
+      return line.replace(uriMatch[0], `URI="${proxyUrl}"`);
+    } catch (error) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('解析渲染报告URI失败:', originalUri, error);
+      }
+      return line;
+    }
+  }
+  return line;
+}
+
+// 处理服务器控制
+function rewriteServerControlUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>): string {
+  // EXT-X-SERVER-CONTROL 通常不包含 URI，但为了完整性保留此函数
+  // 如果将来有包含 URI 的扩展，可以在此处理
+  return line;
+}
+
+// 处理跳过片段
+function rewriteSkipUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>): string {
+  // EXT-X-SKIP 不包含 URI，只包含 SKIPPED-SEGMENTS 等属性
+  // 保持原样返回
+  return line;
 }
