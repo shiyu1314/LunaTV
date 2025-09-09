@@ -62,7 +62,12 @@ export async function sendAIRecommendMessage(
 
   if (!response.ok) {
     const errorData = await response.json();
-    throw new Error(errorData.error || 'AI推荐请求失败');
+    // 将完整错误信息作为JSON字符串抛出，以便前端解析
+    throw new Error(JSON.stringify({
+      error: errorData.error || 'AI推荐请求失败',
+      details: errorData.details,
+      status: errorData.status || response.status
+    }));
   }
 
   return response.json();
@@ -213,24 +218,24 @@ export function formatAIResponseWithLinks(
   // 提取所有影视作品名称
   const titles = extractMovieTitles(content);
   
-  // 为每个作品名称添加可点击样式
+  // 只添加视觉样式，不添加点击功能（点击功能由右侧卡片提供）
   titles.forEach(title => {
-    // 替换《片名》格式
+    // 替换《片名》格式 - 只添加样式，不添加点击
     formatted = formatted.replace(
       new RegExp(`《${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}》`, 'g'),
-      `<span class="movie-title cursor-pointer text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 underline font-medium transition-colors" data-title="${title.replace(/"/g, '&quot;')}">《${title}》</span>`
+      `<span class="text-blue-600 dark:text-blue-400 font-medium">《${title}》</span>`
     );
     
     // 替换"片名"格式
     formatted = formatted.replace(
       new RegExp(`"${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g'),
-      `<span class="movie-title cursor-pointer text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 underline font-medium transition-colors" data-title="${title.replace(/"/g, '&quot;')}">"${title}"</span>`
+      `<span class="text-blue-600 dark:text-blue-400 font-medium">"${title}"</span>`
     );
     
     // 替换【片名】格式
     formatted = formatted.replace(
       new RegExp(`【${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}】`, 'g'),
-      `<span class="movie-title cursor-pointer text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 underline font-medium transition-colors" data-title="${title.replace(/"/g, '&quot;')}">【${title}】</span>`
+      `<span class="text-blue-600 dark:text-blue-400 font-medium">【${title}】</span>`
     );
   });
   

@@ -16,6 +16,7 @@ interface ChatRequest {
   model?: string;
   temperature?: number;
   max_tokens?: number;
+  max_completion_tokens?: number;
 }
 
 export async function POST(request: NextRequest) {
@@ -46,7 +47,7 @@ export async function POST(request: NextRequest) {
       }, { status: 500 });
     }
 
-    const { messages, model, temperature, max_tokens } = await request.json() as ChatRequest;
+    const { messages, model, temperature, max_tokens, max_completion_tokens } = await request.json() as ChatRequest;
 
     // 验证请求格式
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
@@ -121,12 +122,56 @@ export async function POST(request: NextRequest) {
     ];
 
     // 使用配置中的参数或请求参数
-    const requestBody = {
-      model: model || aiConfig.model,
+    const requestModel = model || aiConfig.model;
+    let tokenLimit = max_tokens || max_completion_tokens || aiConfig.maxTokens;
+    
+    // 判断是否是需要使用max_completion_tokens的模型
+    // o系列推理模型(o1,o3,o4等)和GPT-5系列使用max_completion_tokens
+    const useMaxCompletionTokens = requestModel.startsWith('o1') || 
+                                  requestModel.startsWith('o3') || 
+                                  requestModel.startsWith('o4') ||
+                                  requestModel.includes('gpt-5');
+    
+    // 根据搜索结果优化token限制，避免空回复
+    if (useMaxCompletionTokens) {
+      // 推理模型需要更高的token限制
+      // GPT-5: 最大128,000, o3/o4-mini: 最大100,000
+      if (requestModel.includes('gpt-5')) {
+        tokenLimit = Math.max(tokenLimit, 2000); // GPT-5最小2000 tokens
+        tokenLimit = Math.min(tokenLimit, 128000); // GPT-5最大128k tokens
+      } else if (requestModel.startsWith('o3') || requestModel.startsWith('o4')) {
+        tokenLimit = Math.max(tokenLimit, 1500); // o3/o4最小1500 tokens
+        tokenLimit = Math.min(tokenLimit, 100000); // o3/o4最大100k tokens
+      } else {
+        tokenLimit = Math.max(tokenLimit, 1000); // 其他推理模型最小1000 tokens
+      }
+    } else {
+      // 普通模型确保最小token数避免空回复
+      tokenLimit = Math.max(tokenLimit, 500); // 最小500 tokens
+      if (requestModel.includes('gpt-4')) {
+        tokenLimit = Math.min(tokenLimit, 32768); // GPT-4系列最大32k tokens
+      }
+    }
+    
+    const requestBody: any = {
+      model: requestModel,
       messages: chatMessages,
-      temperature: temperature ?? aiConfig.temperature,
-      max_tokens: max_tokens ?? aiConfig.maxTokens,
     };
+    
+    // 推理模型不支持某些参数
+    if (!useMaxCompletionTokens) {
+      requestBody.temperature = temperature ?? aiConfig.temperature;
+    }
+    
+    // 根据模型类型使用正确的token限制参数
+    if (useMaxCompletionTokens) {
+      requestBody.max_completion_tokens = tokenLimit;
+      // 推理模型不支持这些参数
+      console.log(`使用推理模型 ${requestModel}，max_completion_tokens: ${tokenLimit}`);
+    } else {
+      requestBody.max_tokens = tokenLimit;
+      console.log(`使用标准模型 ${requestModel}，max_tokens: ${tokenLimit}`);
+    }
 
     // 调用AI API
     const openaiResponse = await fetch(aiConfig.apiUrl.endsWith('/chat/completions') 
@@ -143,13 +188,93 @@ export async function POST(request: NextRequest) {
     if (!openaiResponse.ok) {
       const errorData = await openaiResponse.text();
       console.error('OpenAI API Error:', errorData);
+      
+      // 提供更详细的错误信息
+      let errorMessage = 'AI服务暂时不可用，请稍后重试';
+      let errorDetails = '';
+      
+      try {
+        const parsedError = JSON.parse(errorData);
+        if (parsedError.error?.message) {
+          errorDetails = parsedError.error.message;
+        }
+      } catch {
+        errorDetails = errorData.substring(0, 200); // 限制错误信息长度
+      }
+      
+      // 根据HTTP状态码提供更具体的错误信息
+      if (openaiResponse.status === 401) {
+        errorMessage = 'API密钥无效，请联系管理员检查配置';
+      } else if (openaiResponse.status === 429) {
+        errorMessage = 'API请求频率限制，请稍后重试';
+      } else if (openaiResponse.status === 400) {
+        errorMessage = '请求参数错误，请检查输入内容';
+      } else if (openaiResponse.status >= 500) {
+        errorMessage = 'AI服务器错误，请稍后重试';
+      }
+      
       return NextResponse.json({ 
-        error: 'AI服务暂时不可用，请稍后重试' 
+        error: errorMessage,
+        details: errorDetails,
+        status: openaiResponse.status
       }, { status: 500 });
     }
 
     const aiResult = await openaiResponse.json();
-    const aiContent = aiResult.choices?.[0]?.message?.content || '抱歉，我现在无法提供推荐，请稍后重试。';
+    
+    // 检查AI响应的完整性
+    if (!aiResult.choices || aiResult.choices.length === 0 || !aiResult.choices[0].message) {
+      console.error('AI响应格式异常:', aiResult);
+      return NextResponse.json({ 
+        error: 'AI服务响应格式异常，请稍后重试',
+        details: `响应结构异常: ${JSON.stringify(aiResult).substring(0, 200)}...`
+      }, { status: 500 });
+    }
+    
+    const aiContent = aiResult.choices[0].message.content;
+    
+    // 检查内容是否为空
+    if (!aiContent || aiContent.trim() === '') {
+      console.error('AI返回空内容:', {
+        model: requestModel,
+        tokenLimit,
+        useMaxCompletionTokens,
+        choices: aiResult.choices,
+        usage: aiResult.usage
+      });
+      
+      let errorMessage = 'AI返回了空回复';
+      let errorDetails = '';
+      
+      if (useMaxCompletionTokens) {
+        // 推理模型特殊处理
+        if (tokenLimit < 1000) {
+          errorMessage = '推理模型token限制过低导致空回复';
+          errorDetails = `当前设置：${tokenLimit} tokens。推理模型建议最少设置1500+ tokens，因为需要额外的推理token消耗。请在管理后台调整maxTokens参数。`;
+        } else {
+          errorMessage = '推理模型返回空内容';
+          errorDetails = `模型：${requestModel}，token设置：${tokenLimit}。推理模型可能因为内容过滤或推理复杂度返回空内容。建议：1) 简化问题描述 2) 检查API密钥权限 3) 尝试增加token限制`;
+        }
+      } else {
+        // 普通模型处理
+        if (tokenLimit < 200) {
+          errorMessage = 'Token限制过低导致空回复';
+          errorDetails = `当前设置：${tokenLimit} tokens，建议至少500+ tokens。请在管理后台调整maxTokens参数。`;
+        } else {
+          errorDetails = '建议：请尝试更详细地描述您想要的影视类型或心情，或联系管理员检查AI配置';
+        }
+      }
+      
+      return NextResponse.json({ 
+        error: errorMessage,
+        details: errorDetails,
+        modelInfo: {
+          model: requestModel,
+          tokenLimit,
+          isReasoningModel: useMaxCompletionTokens
+        }
+      }, { status: 500 });
+    }
     
     // 提取结构化推荐信息
     const recommendations = extractRecommendations(aiContent);
@@ -202,8 +327,29 @@ export async function POST(request: NextRequest) {
 
   } catch (error) {
     console.error('AI推荐API错误:', error);
+    
+    // 提供更详细的错误信息
+    let errorMessage = '服务器内部错误';
+    let errorDetails = '';
+    
+    if (error instanceof Error) {
+      if (error.message.includes('fetch')) {
+        errorMessage = '无法连接到AI服务，请检查网络连接';
+        errorDetails = '网络连接错误，请稍后重试';
+      } else if (error.message.includes('timeout')) {
+        errorMessage = 'AI服务响应超时，请稍后重试';
+        errorDetails = '请求超时，可能是网络问题或服务器负载过高';
+      } else if (error.message.includes('JSON')) {
+        errorMessage = 'AI服务响应格式错误';
+        errorDetails = '服务器返回了无效的数据格式';
+      } else {
+        errorDetails = error.message;
+      }
+    }
+    
     return NextResponse.json({ 
-      error: '服务器内部错误' 
+      error: errorMessage,
+      details: errorDetails
     }, { status: 500 });
   }
 }

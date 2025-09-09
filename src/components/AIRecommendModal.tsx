@@ -32,7 +32,7 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
   const [messages, setMessages] = useState<ExtendedAIMessage[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{message: string, details?: string} | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
@@ -130,7 +130,27 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
       setMessages([...updatedMessages, assistantMessage]);
     } catch (error) {
       console.error('AI推荐请求失败:', error);
-      setError(error instanceof Error ? error.message : '请求失败，请稍后重试');
+      
+      if (error instanceof Error) {
+        // 尝试解析错误响应中的详细信息
+        try {
+          const errorResponse = JSON.parse(error.message);
+          setError({
+            message: errorResponse.error || error.message,
+            details: errorResponse.details
+          });
+        } catch {
+          setError({
+            message: error.message,
+            details: '如果问题持续，请联系管理员检查AI配置'
+          });
+        }
+      } else {
+        setError({
+          message: '请求失败，请稍后重试',
+          details: '未知错误，请检查网络连接'
+        });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -175,18 +195,7 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
     setInputMessage('');
   };
 
-  // 更新消息容器中的可点击链接
-  useEffect(() => {
-    if (messagesContainerRef.current) {
-      // 添加轻微延迟确保DOM已更新
-      const timer = setTimeout(() => {
-        if (messagesContainerRef.current) {
-          addMovieTitleClickListeners(messagesContainerRef.current, handleTitleClick);
-        }
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [messages]);
+  // 不再需要为消息内容添加点击监听器，因为点击功能已移至右侧卡片
 
   if (!isOpen) return null;
 
@@ -292,11 +301,25 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
               {/* 推荐影片卡片 */}
               {message.role === 'assistant' && message.recommendations && message.recommendations.length > 0 && (
                 <div className="mt-3 space-y-2 max-w-[80%]">
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mb-2 flex items-center justify-between">
+                    <div className="flex items-center">
+                      <span className="bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400 px-2 py-1 rounded-full text-xs font-medium mr-2">
+                        🎬 点击搜索
+                      </span>
+                      推荐影片卡片
+                    </div>
+                    <span className="text-gray-400 dark:text-gray-500">
+                      {message.recommendations.length < 4 
+                        ? `显示 ${message.recommendations.length} 个推荐`
+                        : `显示前 4 个推荐`
+                      }
+                    </span>
+                  </div>
                   {message.recommendations.map((movie, index) => (
                     <div
                       key={index}
                       onClick={() => handleMovieSelect(movie)}
-                      className="p-3 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg cursor-pointer hover:shadow-md hover:border-blue-300 dark:hover:border-blue-600 transition-all"
+                      className="p-3 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg cursor-pointer hover:shadow-md hover:border-blue-300 dark:hover:border-blue-600 hover:scale-[1.02] transition-all group"
                     >
                       <div className="flex items-start gap-3">
                         {movie.poster && (
@@ -307,11 +330,14 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
                           />
                         )}
                         <div className="flex-1 min-w-0">
-                          <h4 className="font-medium text-gray-900 dark:text-white text-sm">
+                          <h4 className="font-medium text-gray-900 dark:text-white text-sm flex items-center">
                             {movie.title}
                             {movie.year && (
                               <span className="text-gray-500 dark:text-gray-400 ml-1">({movie.year})</span>
                             )}
+                            <span className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity text-blue-500 text-xs">
+                              🔍 搜索
+                            </span>
                           </h4>
                           {movie.genre && (
                             <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">{movie.genre}</p>
@@ -343,8 +369,32 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
 
           {/* 错误提示 */}
           {error && (
-            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 p-3 rounded-lg">
-              {error}
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 p-4 rounded-lg">
+              <div className="flex items-start space-x-3">
+                <div className="flex-shrink-0">
+                  <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                  </svg>
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-sm font-medium text-red-800 dark:text-red-300">
+                    {error.message}
+                  </h3>
+                  {error.details && (
+                    <div className="mt-2 text-sm text-red-700 dark:text-red-400">
+                      <p>{error.details}</p>
+                    </div>
+                  )}
+                  <div className="mt-3">
+                    <button
+                      onClick={() => setError(null)}
+                      className="text-sm bg-red-100 hover:bg-red-200 dark:bg-red-800 dark:hover:bg-red-700 text-red-800 dark:text-red-200 px-3 py-1 rounded-md transition-colors"
+                    >
+                      关闭
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -377,7 +427,7 @@ export default function AIRecommendModal({ isOpen, onClose }: AIRecommendModalPr
           
           {/* 提示信息 */}
           <div className="mt-2 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-            <span>💡 推荐的影片名称可以点击直接搜索</span>
+            <span>💡 点击右侧影片卡片可直接搜索</span>
             <span>按 Enter 发送，Shift+Enter 换行</span>
           </div>
         </div>

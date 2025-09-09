@@ -52,8 +52,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: '温度参数应在0-2之间' }, { status: 400 });
       }
 
-      if (!Number.isInteger(aiRecommendConfig.maxTokens) || aiRecommendConfig.maxTokens < 1 || aiRecommendConfig.maxTokens > 4000) {
-        return NextResponse.json({ error: '最大Token数应在1-4000之间' }, { status: 400 });
+      if (!Number.isInteger(aiRecommendConfig.maxTokens) || aiRecommendConfig.maxTokens < 1 || aiRecommendConfig.maxTokens > 150000) {
+        return NextResponse.json({ error: '最大Token数应在1-150000之间（GPT-5支持128k，推理模型建议2000+）' }, { status: 400 });
       }
 
       // 验证API地址格式
@@ -85,7 +85,7 @@ export async function POST(request: NextRequest) {
       apiKey: aiRecommendConfig.apiKey?.trim() || '',
       model: aiRecommendConfig.model?.trim() || 'gpt-3.5-turbo',
       temperature: aiRecommendConfig.temperature ?? 0.7,
-      maxTokens: aiRecommendConfig.maxTokens ?? 1000
+      maxTokens: aiRecommendConfig.maxTokens ?? 2000
     };
 
     // 保存配置到数据库

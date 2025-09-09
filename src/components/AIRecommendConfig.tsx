@@ -22,7 +22,7 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
     apiKey: '',
     model: 'gpt-3.5-turbo',
     temperature: 0.7,
-    maxTokens: 1000
+    maxTokens: 2000
   });
 
   // 常用模型参考（建议使用支持联网搜索的模型）
@@ -33,8 +33,9 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
     'claude-4-sonnet (Anthropic)', 
     'gemini-2.5-flash (Google)',
     'gemini-2.5-pro (Google)',
-    'deepseek-r1 (DeepSeek)',
-    'deepseek-v3 (DeepSeek)',
+    'deepseek-reasoner (DeepSeek)',
+    'deepseek-chat (DeepSeek)',
+    'deepseek-coder (DeepSeek)',
     'qwen3-max (阿里云)',
     'glm-4-plus (智谱AI)',
     'llama-4 (Meta)',
@@ -50,7 +51,7 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
         apiKey: config.AIRecommendConfig.apiKey || '',
         model: config.AIRecommendConfig.model || 'gpt-3.5-turbo',
         temperature: config.AIRecommendConfig.temperature ?? 0.7,
-        maxTokens: config.AIRecommendConfig.maxTokens ?? 1000
+        maxTokens: config.AIRecommendConfig.maxTokens ?? 2000
       });
     }
   }, [config]);
@@ -81,8 +82,8 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
         showMessage('error', '温度参数应在0-2之间');
         return;
       }
-      if (aiSettings.maxTokens < 1 || aiSettings.maxTokens > 4000) {
-        showMessage('error', '最大Token数应在1-4000之间');
+      if (aiSettings.maxTokens < 1 || aiSettings.maxTokens > 150000) {
+        showMessage('error', '最大Token数应在1-150000之间（GPT-5支持128k，推理模型建议2000+）');
         return;
       }
     }
@@ -265,10 +266,11 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
                 value={aiSettings.model}
                 onChange={(e) => setAiSettings(prev => ({ ...prev, model: e.target.value }))}
                 className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
-                placeholder='输入模型名称，如：gpt-3.5-turbo'
+                placeholder='请自行填入正确的官方API模型名称，如：gpt-5'
               />
               <div className='mt-2 text-xs text-gray-500 dark:text-gray-400'>
                 <p className='mb-1'>常用模型参考（建议使用支持联网搜索的模型）：</p>
+                <p className='mb-2 text-orange-600 dark:text-orange-400'>⚠️ 请确保填入的模型名称与API提供商的官方文档一致</p>
                 <div className='flex flex-wrap gap-2'>
                   {MODEL_EXAMPLES.map((example, index) => (
                     <button
@@ -320,7 +322,8 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
                   className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
                 />
                 <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
-                  限制AI回复的最大长度
+                  限制AI回复的最大长度。推荐设置：GPT-5/o1/o3/o4推理模型建议2000+，普通模型500-4000即可。
+                  <span className="text-yellow-600 dark:text-yellow-400">⚠️ 设置过低可能导致空回复！</span>
                 </p>
               </div>
             </div>
