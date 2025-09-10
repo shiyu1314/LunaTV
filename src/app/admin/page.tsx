@@ -48,6 +48,8 @@ import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 import AIRecommendConfig from '@/components/AIRecommendConfig';
 import CacheManager from '@/components/CacheManager';
 import DataMigration from '@/components/DataMigration';
+import TVBoxSecurityConfig from '@/components/TVBoxSecurityConfig';
+import YouTubeConfig from '@/components/YouTubeConfig';
 import PageLayout from '@/components/PageLayout';
 
 // 统一按钮样式系统
@@ -4828,6 +4830,8 @@ function AdminPageClient() {
     categoryConfig: false,
     netdiskConfig: false,
     aiRecommendConfig: false,
+    youtubeConfig: false,
+    tvboxSecurityConfig: false,
     configFile: false,
     cacheManager: false,
     dataMigration: false,
@@ -5059,6 +5063,36 @@ function AdminPageClient() {
               onToggle={() => toggleTab('aiRecommendConfig')}
             >
               <AIRecommendConfig config={config} refreshConfig={fetchConfig} />
+            </CollapsibleTab>
+
+            {/* YouTube配置标签 */}
+            <CollapsibleTab
+              title='YouTube配置'
+              icon={
+                <Video
+                  size={20}
+                  className='text-gray-600 dark:text-gray-400'
+                />
+              }
+              isExpanded={expandedTabs.youtubeConfig}
+              onToggle={() => toggleTab('youtubeConfig')}
+            >
+              <YouTubeConfig config={config} refreshConfig={fetchConfig} />
+            </CollapsibleTab>
+
+            {/* TVBox安全配置标签 */}
+            <CollapsibleTab
+              title='TVBox安全配置'
+              icon={
+                <Settings
+                  size={20}
+                  className='text-gray-600 dark:text-gray-400'
+                />
+              }
+              isExpanded={expandedTabs.tvboxSecurityConfig}
+              onToggle={() => toggleTab('tvboxSecurityConfig')}
+            >
+              <TVBoxSecurityConfig config={config} refreshConfig={fetchConfig} />
             </CollapsibleTab>
 
             {/* 缓存管理标签 - 仅站长可见 */}
