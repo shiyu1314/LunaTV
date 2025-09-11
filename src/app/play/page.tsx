@@ -5,7 +5,7 @@
 import { Suspense, useEffect, useRef, useState } from 'react';
 
 import Hls from 'hls.js';
-import { Heart } from 'lucide-react';
+import { Heart, ChevronUp } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import EpisodeSelector from '@/components/EpisodeSelector';
@@ -66,6 +66,9 @@ function PlayPageClient() {
   // 豆瓣详情状态
   const [movieDetails, setMovieDetails] = useState<any>(null);
   const [loadingMovieDetails, setLoadingMovieDetails] = useState(false);
+
+  // 返回顶部按钮显示状态
+  const [showBackToTop, setShowBackToTop] = useState(false);
 
   // bangumi详情状态
   const [bangumiDetails, setBangumiDetails] = useState<any>(null);
@@ -2622,19 +2625,41 @@ function PlayPageClient() {
               display: none !important;
             }
             
-            /* 弹幕配置面板自动适配定位 - 完全模仿ArtPlayer设置面板 */
+            /* 弹幕配置面板优化 - 修复全屏模式下点击问题 */
             .artplayer-plugin-danmuku .apd-config {
-              /* 确保相对定位容器不影响面板定位 */
               position: relative;
             }
             
             .artplayer-plugin-danmuku .apd-config-panel {
-              /* 改为绝对定位，相对于播放器容器 */
+              /* 使用绝对定位而不是fixed，让ArtPlayer的动态定位生效 */
+              position: absolute !important;
+              /* 移除固定的left/right定位，让JS动态计算 */
+              left: auto;
+              right: auto;
+              /* 保留z-index确保层级正确 */
+              z-index: 2147483647 !important; /* 使用最大z-index确保在全屏模式下也能显示在最顶层 */
+              /* 确保面板可以接收点击事件 */
+              pointer-events: auto !important;
+              /* 添加一些基础样式确保可见性 */
+              background: rgba(0, 0, 0, 0.8);
+              border-radius: 6px;
+              backdrop-filter: blur(10px);
+            }
+            
+            /* 全屏模式下的特殊优化 */
+            .artplayer[data-fullscreen="true"] .artplayer-plugin-danmuku .apd-config-panel {
+              /* 全屏时使用固定定位并调整位置 */
               position: fixed !important;
+              top: auto !important;
+              bottom: 80px !important; /* 距离底部控制栏80px */
+              right: 20px !important; /* 距离右边20px */
               left: auto !important;
-              right: 10px !important; /* 与ArtPlayer --art-padding 一致 */
-              transform: none !important; /* 移除任何变换 */
-              z-index: 91 !important; /* 比ArtPlayer设置面板(90)稍高 */
+              z-index: 2147483647 !important;
+            }
+            
+            /* 确保全屏模式下弹幕面板内部元素可点击 */
+            .artplayer[data-fullscreen="true"] .artplayer-plugin-danmuku .apd-config-panel * {
+              pointer-events: auto !important;
             }
           `;
           document.head.appendChild(style);
@@ -3184,6 +3209,58 @@ function PlayPageClient() {
       cleanupPlayer();
     };
   }, []);
+
+  // 返回顶部功能相关
+  useEffect(() => {
+    // 获取滚动位置的函数 - 专门针对 body 滚动
+    const getScrollTop = () => {
+      return document.body.scrollTop || 0;
+    };
+
+    // 使用 requestAnimationFrame 持续检测滚动位置
+    let isRunning = false;
+    const checkScrollPosition = () => {
+      if (!isRunning) return;
+
+      const scrollTop = getScrollTop();
+      const shouldShow = scrollTop > 300;
+      setShowBackToTop(shouldShow);
+
+      requestAnimationFrame(checkScrollPosition);
+    };
+
+    // 启动持续检测
+    isRunning = true;
+    checkScrollPosition();
+
+    // 监听 body 元素的滚动事件
+    const handleScroll = () => {
+      const scrollTop = getScrollTop();
+      setShowBackToTop(scrollTop > 300);
+    };
+
+    document.body.addEventListener('scroll', handleScroll, { passive: true });
+
+    return () => {
+      isRunning = false; // 停止 requestAnimationFrame 循环
+      // 移除 body 滚动事件监听器
+      document.body.removeEventListener('scroll', handleScroll);
+    };
+  }, []);
+
+  // 返回顶部功能
+  const scrollToTop = () => {
+    try {
+      // 根据调试结果，真正的滚动容器是 document.body
+      document.body.scrollTo({
+        top: 0,
+        behavior: 'smooth',
+      });
+    } catch (error) {
+      // 如果平滑滚动完全失败，使用立即滚动
+      document.body.scrollTop = 0;
+    }
+  };
 
   if (loading) {
     return (
@@ -3845,6 +3922,19 @@ function PlayPageClient() {
           </div>
         </div>
       </div>
+
+      {/* 返回顶部悬浮按钮 */}
+      <button
+        onClick={scrollToTop}
+        className={`fixed bottom-20 md:bottom-6 right-6 z-[500] w-12 h-12 bg-green-500/90 hover:bg-green-500 text-white rounded-full shadow-lg backdrop-blur-sm transition-all duration-300 ease-in-out flex items-center justify-center group ${
+          showBackToTop
+            ? 'opacity-100 translate-y-0 pointer-events-auto'
+            : 'opacity-0 translate-y-4 pointer-events-none'
+        }`}
+        aria-label='返回顶部'
+      >
+        <ChevronUp className='w-6 h-6 transition-transform group-hover:scale-110' />
+      </button>
     </PageLayout>
   );
 }
