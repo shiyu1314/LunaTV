@@ -375,11 +375,18 @@ function PlayPageClient() {
   // 弹幕加载状态管理，防止重复加载
   const danmuLoadingRef = useRef<boolean>(false);
   const lastDanmuLoadKeyRef = useRef<string>('');
-  
+
   // 🚀 新增：弹幕操作防抖和性能优化
   const danmuOperationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const episodeSwitchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const danmuPluginStateRef = useRef<any>(null); // 保存弹幕插件状态
+  const isSourceChangingRef = useRef<boolean>(false); // 标记是否正在换源
+  const isEpisodeChangingRef = useRef<boolean>(false); // 标记是否正在切换集数
+
+  // 🚀 新增：连续切换源防抖和资源管理
+  const sourceSwitchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingSwitchRef = useRef<any>(null); // 保存待处理的切换请求
+  const switchPromiseRef = useRef<Promise<void> | null>(null); // 当前切换的Promise
 
   const artPlayerRef = useRef<any>(null);
   const artRef = useRef<HTMLDivElement | null>(null);
@@ -1277,7 +1284,7 @@ function PlayPageClient() {
           } else {
             // 关闭弹幕：立即处理
             console.log('🚀 优化后关闭外部弹幕...');
-            plugin.load([]);
+            plugin.load(); // 不传参数，真正清空弹幕
             plugin.hide();
             console.log('✅ 外部弹幕已关闭');
             
@@ -1306,13 +1313,34 @@ function PlayPageClient() {
     const currentEpisodeNum = currentEpisodeIndex + 1;
     const requestKey = `${currentVideoTitle}_${currentVideoYear}_${currentVideoDoubanId}_${currentEpisodeNum}`;
     
-    // 防止重复加载相同内容
-    if (danmuLoadingRef.current || lastDanmuLoadKeyRef.current === requestKey) {
-      console.log('弹幕正在加载中或内容未变化，跳过本次请求');
+    // 🚀 优化加载状态检测：更智能的卡住检测
+    const now = Date.now();
+    const loadingState = danmuLoadingRef.current as any;
+    const lastLoadTime = loadingState?.timestamp || 0;
+    const lastRequestKey = loadingState?.requestKey || '';
+    const isStuckLoad = now - lastLoadTime > 15000; // 降低到15秒超时
+    const isSameRequest = lastRequestKey === requestKey;
+
+    // 智能重复检测：区分真正的重复和卡住的请求
+    if (loadingState?.loading && isSameRequest && !isStuckLoad) {
+      console.log('⏳ 弹幕正在加载中，跳过重复请求');
       return [];
     }
-    
-    danmuLoadingRef.current = true;
+
+    // 强制重置卡住的加载状态
+    if (isStuckLoad && loadingState?.loading) {
+      console.warn('🔧 检测到弹幕加载超时，强制重置 (15秒)');
+      danmuLoadingRef.current = false;
+    }
+
+    // 设置新的加载状态，包含更多上下文信息
+    danmuLoadingRef.current = {
+      loading: true,
+      timestamp: now,
+      requestKey,
+      source: currentSource,
+      episode: currentEpisodeNum
+    } as any;
     lastDanmuLoadKeyRef.current = requestKey;
     
     try {
@@ -1412,20 +1440,39 @@ function PlayPageClient() {
 
   // 🚀 优化的集数变化处理（防抖 + 状态保护）
   useEffect(() => {
+    // 🔥 标记正在切换集数（只在非换源时）
+    if (!isSourceChangingRef.current) {
+      isEpisodeChangingRef.current = true;
+      console.log('🔄 开始切换集数，标记为集数变化');
+    }
+
     updateVideoUrl(detail, currentEpisodeIndex);
-    
-    // 重置弹幕加载标识，允许新集数加载弹幕
+
+    // 🚀 如果正在换源，跳过弹幕处理（换源会在完成后手动处理）
+    if (isSourceChangingRef.current) {
+      console.log('⏭️ 正在换源，跳过弹幕处理');
+      return;
+    }
+
+    // 🔥 关键修复：重置弹幕加载标识，确保新集数能正确加载弹幕
     lastDanmuLoadKeyRef.current = '';
-    
+    danmuLoadingRef.current = false; // 重置加载状态
+
     // 清除之前的集数切换定时器，防止重复执行
     if (episodeSwitchTimeoutRef.current) {
       clearTimeout(episodeSwitchTimeoutRef.current);
     }
-    
+
     // 如果播放器已经存在且弹幕插件已加载，重新加载弹幕
     if (artPlayerRef.current && artPlayerRef.current.plugins?.artplayerPluginDanmuku) {
       console.log('🚀 集数变化，优化后重新加载弹幕');
-      
+
+      // 🔥 关键修复：立即清空当前弹幕，避免旧弹幕残留
+      const plugin = artPlayerRef.current.plugins.artplayerPluginDanmuku;
+      plugin.reset(); // 立即回收所有正在显示的弹幕DOM
+      plugin.load(); // 不传参数，完全清空弹幕队列
+      console.log('🧹 已清空旧弹幕数据');
+
       // 保存当前弹幕插件状态
       danmuPluginStateRef.current = {
         isHide: artPlayerRef.current.plugins.artplayerPluginDanmuku.isHide,
@@ -1465,7 +1512,8 @@ function PlayPageClient() {
               }
             } else {
               console.log('📭 集数变化后没有弹幕数据可加载');
-              // 不自动清空，保持用户体验
+              plugin.load(); // 不传参数，确保清空弹幕
+
               if (artPlayerRef.current) {
                 artPlayerRef.current.notice.show = '暂无弹幕数据';
               }
@@ -1735,16 +1783,66 @@ function PlayPageClient() {
     initSkipConfig();
   }, []);
 
-  // 处理换源
+  // 🚀 优化的换源处理（防连续点击）
   const handleSourceChange = async (
     newSource: string,
     newId: string,
     newTitle: string
   ) => {
     try {
+      // 防止连续点击换源
+      if (isSourceChangingRef.current) {
+        console.log('⏸️ 正在换源中，忽略重复点击');
+        return;
+      }
+
+      // 🚀 设置换源标识，防止useEffect重复处理弹幕
+      isSourceChangingRef.current = true;
+
       // 显示换源加载状态
       setVideoLoadingStage('sourceChanging');
       setIsVideoLoading(true);
+
+      // 🚀 立即重置弹幕相关状态，避免残留
+      lastDanmuLoadKeyRef.current = '';
+      danmuLoadingRef.current = false;
+
+      // 清除弹幕操作定时器
+      if (danmuOperationTimeoutRef.current) {
+        clearTimeout(danmuOperationTimeoutRef.current);
+        danmuOperationTimeoutRef.current = null;
+      }
+      if (episodeSwitchTimeoutRef.current) {
+        clearTimeout(episodeSwitchTimeoutRef.current);
+        episodeSwitchTimeoutRef.current = null;
+      }
+
+      // 🚀 正确地清空弹幕状态（基于ArtPlayer插件API）
+      if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+        const plugin = artPlayerRef.current.plugins.artplayerPluginDanmuku;
+
+        try {
+          // 🚀 正确清空弹幕：先reset回收DOM，再load清空队列
+          if (typeof plugin.reset === 'function') {
+            plugin.reset(); // 立即回收所有正在显示的弹幕DOM
+          }
+
+          if (typeof plugin.load === 'function') {
+            // 关键：load()不传参数会触发清空逻辑（danmuku === undefined）
+            plugin.load();
+            console.log('✅ 已完全清空弹幕队列');
+          }
+
+          // 然后隐藏弹幕层
+          if (typeof plugin.hide === 'function') {
+            plugin.hide();
+          }
+
+          console.log('🧹 换源时已清空旧弹幕数据');
+        } catch (error) {
+          console.warn('清空弹幕时出错，但继续换源:', error);
+        }
+      }
 
       // 记录当前播放进度（仅在同一集数切换时恢复）
       const currentPlayTime = artPlayerRef.current?.currentTime || 0;
@@ -1818,7 +1916,78 @@ function PlayPageClient() {
       setCurrentId(newId);
       setDetail(newDetail);
       setCurrentEpisodeIndex(targetIndex);
+
+      // 🚀 换源完成后，优化弹幕加载流程
+      setTimeout(async () => {
+        isSourceChangingRef.current = false; // 重置换源标识
+
+        if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku && externalDanmuEnabledRef.current) {
+          console.log('🔄 换源完成，开始优化弹幕加载...');
+
+          // 确保状态完全重置
+          lastDanmuLoadKeyRef.current = '';
+          danmuLoadingRef.current = false;
+
+          try {
+            const startTime = performance.now();
+            const danmuData = await loadExternalDanmu();
+
+            if (danmuData.length > 0 && artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+              const plugin = artPlayerRef.current.plugins.artplayerPluginDanmuku;
+
+              // 🚀 确保在加载新弹幕前完全清空旧弹幕
+              plugin.reset(); // 立即回收所有正在显示的弹幕DOM
+              plugin.load(); // 不传参数，完全清空队列
+              console.log('🧹 换源后已清空旧弹幕，准备加载新弹幕');
+
+              // 🚀 优化大量弹幕的加载：分批处理，减少阻塞
+              if (danmuData.length > 1000) {
+                console.log(`📊 检测到大量弹幕 (${danmuData.length}条)，启用分批加载`);
+
+                // 先加载前500条，快速显示
+                const firstBatch = danmuData.slice(0, 500);
+                plugin.load(firstBatch);
+
+                // 剩余弹幕分批异步加载，避免阻塞
+                const remainingBatches = [];
+                for (let i = 500; i < danmuData.length; i += 300) {
+                  remainingBatches.push(danmuData.slice(i, i + 300));
+                }
+
+                // 使用requestIdleCallback分批加载剩余弹幕
+                remainingBatches.forEach((batch, index) => {
+                  setTimeout(() => {
+                    if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+                      // 将批次弹幕追加到现有队列
+                      batch.forEach(danmu => {
+                        plugin.emit(danmu).catch(console.warn);
+                      });
+                    }
+                  }, (index + 1) * 100); // 每100ms加载一批
+                });
+
+                console.log(`⚡ 分批加载完成: 首批${firstBatch.length}条 + ${remainingBatches.length}个后续批次`);
+              } else {
+                // 弹幕数量较少，正常加载
+                plugin.load(danmuData);
+                console.log(`✅ 换源后弹幕加载完成: ${danmuData.length} 条`);
+              }
+
+              const loadTime = performance.now() - startTime;
+              console.log(`⏱️ 弹幕加载耗时: ${loadTime.toFixed(2)}ms`);
+            } else {
+              console.log('📭 换源后没有弹幕数据');
+            }
+          } catch (error) {
+            console.error('❌ 换源后弹幕加载失败:', error);
+          }
+        }
+      }, 1000); // 减少到1秒延迟，加快响应
+
     } catch (err) {
+      // 重置换源标识
+      isSourceChangingRef.current = false;
+
       // 隐藏换源加载状态
       setIsVideoLoading(false);
       setError(err instanceof Error ? err.message : '换源失败');
@@ -1829,6 +1998,27 @@ function PlayPageClient() {
     document.addEventListener('keydown', handleKeyboardShortcuts);
     return () => {
       document.removeEventListener('keydown', handleKeyboardShortcuts);
+    };
+  }, []);
+
+  // 🚀 组件卸载时清理所有定时器和状态
+  useEffect(() => {
+    return () => {
+      // 清理所有定时器
+      if (danmuOperationTimeoutRef.current) {
+        clearTimeout(danmuOperationTimeoutRef.current);
+      }
+      if (episodeSwitchTimeoutRef.current) {
+        clearTimeout(episodeSwitchTimeoutRef.current);
+      }
+      if (sourceSwitchTimeoutRef.current) {
+        clearTimeout(sourceSwitchTimeoutRef.current);
+      }
+
+      // 重置状态
+      isSourceChangingRef.current = false;
+      switchPromiseRef.current = null;
+      pendingSwitchRef.current = null;
     };
   }, []);
 
@@ -2182,24 +2372,73 @@ function PlayPageClient() {
       '投屏策略': isIOS || isSafari ? '🍎 AirPlay (WebKit)' : isChrome ? '📺 Chromecast (Cast API)' : '❌ 不支持投屏'
     });
 
-    // 优先使用ArtPlayer的switch方法，避免重建播放器
+    // 🚀 优化连续切换：防抖机制 + 资源管理
     if (artPlayerRef.current && !loading) {
       try {
-        // 🚀 优化：不在这里处理弹幕，让 useEffect 统一处理
-        // 保存当前弹幕状态，但不清空弹幕（避免闪烁）
+        // 清除之前的切换定时器
+        if (sourceSwitchTimeoutRef.current) {
+          clearTimeout(sourceSwitchTimeoutRef.current);
+          sourceSwitchTimeoutRef.current = null;
+        }
+
+        // 如果有正在进行的切换，先取消
+        if (switchPromiseRef.current) {
+          console.log('⏸️ 取消前一个切换操作，开始新的切换');
+          // ArtPlayer没有提供取消机制，但我们可以忽略旧的结果
+          switchPromiseRef.current = null;
+        }
+
+        // 保存弹幕状态
         if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
           danmuPluginStateRef.current = {
             isHide: artPlayerRef.current.plugins.artplayerPluginDanmuku.isHide,
             isStop: artPlayerRef.current.plugins.artplayerPluginDanmuku.isStop,
             option: artPlayerRef.current.plugins.artplayerPluginDanmuku.option
           };
-          console.log('🔄 已保存弹幕状态，准备切换视频');
         }
-        
-        // 使用ArtPlayer的switch方法切换URL
-        artPlayerRef.current.switch = videoUrl;
-        artPlayerRef.current.title = `${videoTitle} - 第${currentEpisodeIndex + 1}集`;
-        artPlayerRef.current.poster = videoCover;
+
+        // 🚀 关键修复：区分换源和切换集数
+        const isEpisodeChange = isEpisodeChangingRef.current;
+        const currentTime = artPlayerRef.current.currentTime || 0;
+
+        let switchPromise: Promise<any>;
+        if (isEpisodeChange) {
+          console.log(`🎯 开始切换集数: ${videoUrl} (重置播放时间到0)`);
+          // 切换集数时重置播放时间到0
+          switchPromise = artPlayerRef.current.switchUrl(videoUrl);
+        } else {
+          console.log(`🎯 开始切换源: ${videoUrl} (保持进度: ${currentTime.toFixed(2)}s)`);
+          // 换源时保持播放进度
+          switchPromise = artPlayerRef.current.switchQuality(videoUrl);
+        }
+
+        // 创建切换Promise
+        switchPromise = switchPromise.then(() => {
+          // 只有当前Promise还是活跃的才执行后续操作
+          if (switchPromiseRef.current === switchPromise) {
+            artPlayerRef.current.title = `${videoTitle} - 第${currentEpisodeIndex + 1}集`;
+            artPlayerRef.current.poster = videoCover;
+            console.log('✅ 源切换完成');
+
+            // 🔥 重置集数切换标识
+            if (isEpisodeChange) {
+              isEpisodeChangingRef.current = false;
+              console.log('🎯 集数切换完成，重置标识');
+            }
+          }
+        }).catch((error: any) => {
+          if (switchPromiseRef.current === switchPromise) {
+            console.warn('⚠️ 源切换失败，将重建播放器:', error);
+            // 重置集数切换标识
+            if (isEpisodeChange) {
+              isEpisodeChangingRef.current = false;
+            }
+            throw error; // 让外层catch处理
+          }
+        });
+
+        switchPromiseRef.current = switchPromise;
+        await switchPromise;
         
         if (artPlayerRef.current?.video) {
           ensureVideoSource(
@@ -2214,6 +2453,8 @@ function PlayPageClient() {
         return;
       } catch (error) {
         console.warn('Switch方法失败，将重建播放器:', error);
+        // 重置集数切换标识
+        isEpisodeChangingRef.current = false;
         // 如果switch失败，清理播放器并重新创建
         cleanupPlayer();
       }
@@ -2604,9 +2845,15 @@ function PlayPageClient() {
                   return true
                 },
                 
-                // 🚀 激进性能优化的动态密度控制
+                // 🚀 优化的弹幕显示前检查（换源时性能优化）
                 beforeVisible: (danmu: any) => {
                   return new Promise<boolean>((resolve) => {
+                    // 换源期间快速拒绝弹幕显示，减少处理开销
+                    if (isSourceChangingRef.current) {
+                      resolve(false);
+                      return;
+                    }
+
                     // 🎯 动态弹幕密度控制 - 根据当前屏幕上的弹幕数量决定是否显示
                     const currentVisibleCount = document.querySelectorAll('.art-danmuku [data-state="emit"]').length;
                     const maxConcurrentDanmu = devicePerformance === 'high' ? 60 :
@@ -3370,6 +3617,12 @@ function PlayPageClient() {
 
         // 隐藏换源加载状态
         setIsVideoLoading(false);
+
+        // 🔥 重置集数切换标识（播放器成功创建后）
+        if (isEpisodeChangingRef.current) {
+          isEpisodeChangingRef.current = false;
+          console.log('🎯 播放器创建完成，重置集数切换标识');
+        }
       });
 
       // 监听播放器错误
@@ -3461,6 +3714,8 @@ function PlayPageClient() {
       }
     } catch (err) {
       console.error('创建播放器失败:', err);
+      // 重置集数切换标识
+      isEpisodeChangingRef.current = false;
       setError('播放器初始化失败');
     }
     }; // 结束 initPlayer 函数
