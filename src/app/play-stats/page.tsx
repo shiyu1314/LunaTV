@@ -35,6 +35,7 @@ const PlayStatsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'admin' | 'personal'>('admin'); // 新增Tab状态
   const [upcomingReleases, setUpcomingReleases] = useState<ReleaseCalendarItem[]>([]);
   const [upcomingLoading, setUpcomingLoading] = useState(false);
+  const [upcomingInitialized, setUpcomingInitialized] = useState(false);
 
   // 检查用户权限
   useEffect(() => {
@@ -246,6 +247,7 @@ const PlayStatsPage: React.FC = () => {
           console.log('使用缓存的即将上映数据，缓存年龄:', Math.round(age / 1000 / 60), '分钟');
           setUpcomingReleases(JSON.parse(cachedData));
           setUpcomingLoading(false);
+          setUpcomingInitialized(true); // 标记已经初始化完成
           return;
         }
       }
@@ -271,11 +273,16 @@ const PlayStatsPage: React.FC = () => {
         console.log('获取即将上映内容成功:', items.length, '(从服务器)');
       } else {
         console.error('获取即将上映内容失败:', response.status);
+        // API失败时设置空数组，确保UI仍然显示
+        setUpcomingReleases([]);
       }
     } catch (error) {
       console.error('获取即将上映内容失败:', error);
+      // 网络错误时设置空数组，确保UI仍然显示
+      setUpcomingReleases([]);
     } finally {
       setUpcomingLoading(false);
+      setUpcomingInitialized(true); // 标记已经初始化完成
     }
   }, [cleanExpiredCache]);
 
@@ -602,47 +609,49 @@ const PlayStatsPage: React.FC = () => {
     return (
       <PageLayout activePath="/play-stats">
         <div className='max-w-7xl mx-auto px-4 py-8'>
-          {/* 页面标题、Tab切换和刷新按钮 */}
-          <div className='flex justify-between items-start mb-8'>
-            <div className='flex-1'>
-              <h1 className='text-3xl font-bold text-gray-900 dark:text-white'>
-                播放统计
-              </h1>
-              <p className='text-gray-600 dark:text-gray-400 mt-2'>
-                {activeTab === 'admin' ? '查看全站播放数据和趋势分析' : '查看您的个人播放记录和统计'}
-              </p>
+          {/* 页面标题和描述 */}
+          <div className='mb-6'>
+            <h1 className='text-3xl font-bold text-gray-900 dark:text-white'>
+              播放统计
+            </h1>
+            <p className='text-gray-600 dark:text-gray-400 mt-2'>
+              {activeTab === 'admin' ? '查看全站播放数据和趋势分析' : '查看您的个人播放记录和统计'}
+            </p>
+          </div>
 
-              {/* Tab 切换 */}
-              <div className='mt-6 border-b border-gray-200 dark:border-gray-700'>
-                <nav className='-mb-px flex space-x-8'>
-                  <button
-                    onClick={() => setActiveTab('admin')}
-                    className={`py-2 px-1 border-b-2 font-medium text-sm ${
-                      activeTab === 'admin'
-                        ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
-                    }`}
-                  >
-                    全站统计
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('personal')}
-                    className={`py-2 px-1 border-b-2 font-medium text-sm ${
-                      activeTab === 'personal'
-                        ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
-                    }`}
-                  >
-                    我的统计
-                  </button>
-                </nav>
-              </div>
+          {/* Tab切换和刷新按钮 */}
+          <div className='flex justify-between items-end mb-8'>
+            {/* Tab 切换 */}
+            <div className='border-b border-gray-200 dark:border-gray-700'>
+              <nav className='-mb-px flex space-x-8'>
+                <button
+                  onClick={() => setActiveTab('admin')}
+                  className={`py-2 px-1 border-b-2 font-medium text-sm ${
+                    activeTab === 'admin'
+                      ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+                  }`}
+                >
+                  全站统计
+                </button>
+                <button
+                  onClick={() => setActiveTab('personal')}
+                  className={`py-2 px-1 border-b-2 font-medium text-sm ${
+                    activeTab === 'personal'
+                      ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+                  }`}
+                >
+                  我的统计
+                </button>
+              </nav>
             </div>
 
+            {/* 刷新按钮 */}
             <button
               onClick={handleRefreshClick}
               disabled={loading}
-              className='px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white text-sm rounded-lg transition-colors flex items-center space-x-2 ml-4'
+              className='px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white text-sm rounded-lg transition-colors flex items-center space-x-2 mb-0.5'
             >
               <svg
                 className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`}
@@ -1147,7 +1156,7 @@ const PlayStatsPage: React.FC = () => {
               </div>
 
               {/* 即将上映卡片 */}
-              {(upcomingReleases.length > 0 || upcomingLoading) && (
+              {(upcomingInitialized || upcomingLoading) && (
                 <div className="mb-8">
                   <div className="bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg p-6 text-white shadow-lg">
                     <div className="flex items-center justify-between mb-4">
@@ -1228,6 +1237,19 @@ const PlayStatsPage: React.FC = () => {
                                     </div>
                                   </div>
                                 ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* 空状态提示 */}
+                          {upcomingReleases.length === 0 && !upcomingLoading && upcomingInitialized && (
+                            <div className="text-center py-6">
+                              <div className="text-purple-100 text-sm mb-2">📅</div>
+                              <div className="text-purple-100 text-sm">
+                                暂无即将上映的内容
+                              </div>
+                              <div className="text-purple-200 text-xs mt-1">
+                                数据获取可能失败，请尝试刷新
                               </div>
                             </div>
                           )}
@@ -1523,7 +1545,7 @@ const PlayStatsPage: React.FC = () => {
       <PageLayout activePath="/play-stats">
         <div className='max-w-6xl mx-auto px-4 py-8'>
           {/* 页面标题和刷新按钮 */}
-          <div className='flex justify-between items-center mb-8'>
+          <div className='flex justify-between items-start mb-8'>
             <div>
               <h1 className='text-3xl font-bold text-gray-900 dark:text-white'>
                 个人统计
@@ -1532,11 +1554,12 @@ const PlayStatsPage: React.FC = () => {
                 查看您的个人播放记录和统计数据
               </p>
             </div>
-            <button
-              onClick={handleRefreshClick}
-              disabled={loading}
-              className='px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white text-sm rounded-lg transition-colors flex items-center space-x-2'
-            >
+            <div className='mt-10'>
+              <button
+                onClick={handleRefreshClick}
+                disabled={loading}
+                className='px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white text-sm rounded-lg transition-colors flex items-center space-x-2'
+              >
               <svg
                 className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`}
                 fill='none'
@@ -1552,6 +1575,7 @@ const PlayStatsPage: React.FC = () => {
               </svg>
               <span>{loading ? '刷新中...' : '刷新数据'}</span>
             </button>
+            </div>
           </div>
 
           {/* 错误提示 */}
@@ -1703,7 +1727,7 @@ const PlayStatsPage: React.FC = () => {
           </div>
 
           {/* 即将上映卡片 */}
-          {(upcomingReleases.length > 0 || upcomingLoading) && (
+          {(upcomingInitialized || upcomingLoading) && (
             <div className="mb-8">
               <div className="bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg p-6 text-white shadow-lg">
                 <div className="flex items-center justify-between mb-4">
@@ -1783,6 +1807,19 @@ const PlayStatsPage: React.FC = () => {
                                 </div>
                               </div>
                             ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 空状态提示 */}
+                      {upcomingReleases.length === 0 && !upcomingLoading && upcomingInitialized && (
+                        <div className="text-center py-6">
+                          <div className="text-purple-100 text-sm mb-2">📅</div>
+                          <div className="text-purple-100 text-sm">
+                            暂无即将上映的内容
+                          </div>
+                          <div className="text-purple-200 text-xs mt-1">
+                            数据获取可能失败，请尝试刷新
                           </div>
                         </div>
                       )}
