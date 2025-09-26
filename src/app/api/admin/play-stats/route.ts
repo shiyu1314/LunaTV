@@ -103,8 +103,8 @@ export async function GET(request: NextRequest) {
           registrationData[regDate] = (registrationData[regDate] || 0) + 1;
         }
 
-        // 获取用户最后登录时间（从播放记录推断）
-        let lastLoginTime = 0; // 初始化为0，确保任何播放记录都会更新这个值
+        // 获取用户真实的最后登录时间
+        const lastLoginTime = user.lastLoginTime || userCreatedAt; // 如果没有登录记录，使用注册时间
 
         // 获取用户的所有播放记录
         const userPlayRecords = await storage.getAllPlayRecords(user.username);
@@ -139,11 +139,6 @@ export async function GET(request: NextRequest) {
           // 更新最后播放时间
           if (record.save_time > userLastPlayTime) {
             userLastPlayTime = record.save_time;
-          }
-
-          // 更新最后登录时间（基于播放活动推断）
-          if (record.save_time > lastLoginTime) {
-            lastLoginTime = record.save_time;
           }
 
           // 统计来源
@@ -187,7 +182,7 @@ export async function GET(request: NextRequest) {
           avgWatchTime: records.length > 0 ? userWatchTime / records.length : 0,
           mostWatchedSource,
           registrationDays,
-          lastLoginTime: lastLoginTime || userCreatedAt, // 如果没有播放记录，使用注册时间
+          lastLoginTime: lastLoginTime, // 使用真实的登录时间
           createdAt: userCreatedAt,
         };
 
@@ -202,6 +197,7 @@ export async function GET(request: NextRequest) {
         // 设置项目开始时间，2025年9月14日
         const PROJECT_START_DATE = new Date('2025-09-14').getTime();
         const userCreatedAt = user.createdAt || PROJECT_START_DATE;
+        const userLastLoginTime = user.lastLoginTime || userCreatedAt; // 使用真实的登录时间
 
         // 使用自然日计算，与个人统计保持一致
         const firstDate = new Date(userCreatedAt);
@@ -219,7 +215,7 @@ export async function GET(request: NextRequest) {
           avgWatchTime: 0,
           mostWatchedSource: '',
           registrationDays,
-          lastLoginTime: userCreatedAt, // 没有播放记录时使用注册时间
+          lastLoginTime: userLastLoginTime, // 使用真实的登录时间
           createdAt: userCreatedAt,
         });
       }

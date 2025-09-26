@@ -344,8 +344,10 @@ async function cleanupInactiveUsers() {
     // 检查是否启用自动清理功能
     const autoCleanupEnabled = config.UserConfig?.AutoCleanupInactiveUsers ?? false;
     const inactiveUserDays = config.UserConfig?.InactiveUserDays ?? 7;
+    // 新增：清理模式，'playRecords' 基于播放记录，'loginTime' 基于登录时间，'both' 两者都满足才清理
+    const cleanupMode = config.UserConfig?.InactiveUserCleanupMode ?? 'loginTime';
 
-    console.log(`📋 清理配置: 启用=${autoCleanupEnabled}, 保留天数=${inactiveUserDays}`);
+    console.log(`📋 清理配置: 启用=${autoCleanupEnabled}, 保留天数=${inactiveUserDays}, 清理模式=${cleanupMode}`);
 
     if (!autoCleanupEnabled) {
       console.log('⏭️ 自动清理非活跃用户功能已禁用，跳过清理任务');
@@ -415,27 +417,72 @@ async function cleanupInactiveUsers() {
           continue;
         }
 
-        // 获取用户统计信息（5秒超时）
-        console.log(`  📊 获取用户统计信息: ${user.username}`);
-        let userStats;
-        try {
-          userStats = await Promise.race([
-            db.getUserPlayStat(user.username),
-            new Promise((_, reject) =>
-              setTimeout(() => reject(new Error('getUserPlayStat超时')), 5000)
-            )
-          ]) as { lastPlayTime: number; totalPlays: number; [key: string]: any };
-          console.log(`  📈 用户统计结果:`, userStats);
-        } catch (err) {
-          console.error(`  ❌ 获取用户统计失败: ${err}, 跳过该用户`);
-          continue;
+        // 根据清理模式判断是否删除用户
+        let shouldDelete = false;
+        let deleteReason = '';
+
+        if (cleanupMode === 'loginTime') {
+          // 基于登录时间的清理模式
+          const lastLoginTime = user.lastLoginTime || userCreatedAt; // 如果没有登录记录，使用注册时间
+          const isInactiveByLogin = (Date.now() - lastLoginTime) > (inactiveUserDays * 24 * 60 * 60 * 1000);
+
+          shouldDelete = isInactiveByLogin;
+          deleteReason = `超过${inactiveUserDays}天未登录 (最后登录: ${user.lastLoginTime ? new Date(user.lastLoginTime).toISOString() : '从未登录'})`;
+
+          console.log(`  🔑 登录时间检查: 最后登录=${user.lastLoginTime ? new Date(user.lastLoginTime).toISOString() : '从未登录'}, 是否超期=${isInactiveByLogin}`);
+
+        } else if (cleanupMode === 'playRecords') {
+          // 基于播放记录的清理模式（原有逻辑）
+          console.log(`  📊 获取用户统计信息: ${user.username}`);
+          let userStats;
+          try {
+            userStats = await Promise.race([
+              db.getUserPlayStat(user.username),
+              new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('getUserPlayStat超时')), 5000)
+              )
+            ]) as { lastPlayTime: number; totalPlays: number; [key: string]: any };
+            console.log(`  📈 用户统计结果:`, userStats);
+          } catch (err) {
+            console.error(`  ❌ 获取用户统计失败: ${err}, 跳过该用户`);
+            continue;
+          }
+
+          const hasNeverPlayed = userStats.lastPlayTime === 0 || userStats.totalPlays === 0;
+          shouldDelete = isOldEnough && hasNeverPlayed;
+          deleteReason = `注册超过${inactiveUserDays}天且从未播放内容 (播放次数: ${userStats.totalPlays})`;
+
+          console.log(`  🎬 播放记录检查: 播放次数=${userStats.totalPlays}, 最后播放=${userStats.lastPlayTime}, 从未播放=${hasNeverPlayed}`);
+
+        } else if (cleanupMode === 'both') {
+          // 同时满足登录时间和播放记录条件才删除
+          console.log(`  📊 获取用户统计信息: ${user.username}`);
+          let userStats;
+          try {
+            userStats = await Promise.race([
+              db.getUserPlayStat(user.username),
+              new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('getUserPlayStat超时')), 5000)
+              )
+            ]) as { lastPlayTime: number; totalPlays: number; [key: string]: any };
+            console.log(`  📈 用户统计结果:`, userStats);
+          } catch (err) {
+            console.error(`  ❌ 获取用户统计失败: ${err}, 跳过该用户`);
+            continue;
+          }
+
+          const lastLoginTime = user.lastLoginTime || userCreatedAt;
+          const isInactiveByLogin = (Date.now() - lastLoginTime) > (inactiveUserDays * 24 * 60 * 60 * 1000);
+          const hasNeverPlayed = userStats.lastPlayTime === 0 || userStats.totalPlays === 0;
+
+          shouldDelete = isOldEnough && isInactiveByLogin && hasNeverPlayed;
+          deleteReason = `同时满足: 注册超过${inactiveUserDays}天 + 超过${inactiveUserDays}天未登录 + 从未播放内容`;
+
+          console.log(`  🔄 综合检查: 登录超期=${isInactiveByLogin}, 从未播放=${hasNeverPlayed}, 注册超期=${isOldEnough}`);
         }
 
-        // 检查是否满足删除条件：从未播放过内容
-        const hasNeverPlayed = userStats.lastPlayTime === 0 || userStats.totalPlays === 0;
-
-        if (isOldEnough && hasNeverPlayed) {
-          console.log(`🗑️ 删除非活跃用户: ${user.username} (注册于: ${new Date(userCreatedAt).toISOString()}, 播放次数: ${userStats.totalPlays}, 设置阈值: ${inactiveUserDays}天)`);
+        if (shouldDelete) {
+          console.log(`🗑️ 删除非活跃用户: ${user.username} - ${deleteReason}`);
 
           // 从数据库删除用户数据
           await db.deleteUser(user.username);
@@ -448,8 +495,14 @@ async function cleanupInactiveUsers() {
 
           deletedCount++;
         } else {
-          const reason = !isOldEnough ? `注册时间不足${inactiveUserDays}天` : '用户有播放记录';
-          console.log(`✅ 保留用户 ${user.username}: ${reason}`);
+          const keepReason = (() => {
+            if (!isOldEnough) return `注册时间不足${inactiveUserDays}天`;
+            if (cleanupMode === 'loginTime') return '登录时间在有效期内';
+            if (cleanupMode === 'playRecords') return '用户有播放记录';
+            if (cleanupMode === 'both') return '不满足所有删除条件';
+            return '其他原因';
+          })();
+          console.log(`✅ 保留用户 ${user.username}: ${keepReason}`);
         }
 
       } catch (err) {
