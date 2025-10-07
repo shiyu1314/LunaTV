@@ -12,6 +12,7 @@ import {
   getDetailedWatchingUpdates,
   checkWatchingUpdates,
   markUpdatesAsViewed,
+  forceClearWatchingUpdatesCache,
   type WatchingUpdate,
 } from '@/lib/watching-updates';
 
@@ -272,32 +273,16 @@ const PlayStatsPage: React.FC = () => {
     });
   }, []);
 
-  // 获取即将上映的内容
+  // 获取即将上映的内容（不再使用localStorage缓存，完全依赖API数据库缓存）
   const fetchUpcomingReleases = useCallback(async () => {
     try {
       setUpcomingLoading(true);
 
-      // 清理过期缓存
+      // 清理过期的localStorage缓存（兼容性清理）
       cleanExpiredCache();
 
-      // 检查本地缓存（2小时缓存）
-      const cacheKey = 'upcoming_releases_cache';
-      const cacheTimeKey = 'upcoming_releases_cache_time';
-      const CACHE_DURATION = 2 * 60 * 60 * 1000; // 2小时
-
-      const cachedData = localStorage.getItem(cacheKey);
-      const cachedTime = localStorage.getItem(cacheTimeKey);
-
-      if (cachedData && cachedTime) {
-        const age = Date.now() - parseInt(cachedTime);
-        if (age < CACHE_DURATION) {
-          console.log('使用缓存的即将上映数据，缓存年龄:', Math.round(age / 1000 / 60), '分钟');
-          setUpcomingReleases(JSON.parse(cachedData));
-          setUpcomingLoading(false);
-          setUpcomingInitialized(true); // 标记已经初始化完成
-          return;
-        }
-      }
+      // 🌐 直接从API获取数据（API有数据库缓存，24小时有效）
+      console.log('🌐 正在从API获取即将上映数据...');
 
       // 获取未来2周的发布内容，包含更多电影
       const today = new Date();
@@ -313,11 +298,7 @@ const PlayStatsPage: React.FC = () => {
         const items = data.items || [];
         setUpcomingReleases(items);
 
-        // 缓存数据
-        localStorage.setItem(cacheKey, JSON.stringify(items));
-        localStorage.setItem(cacheTimeKey, Date.now().toString());
-
-        console.log('获取即将上映内容成功:', items.length, '(从服务器)');
+        console.log(`📊 获取到 ${items.length} 条即将上映数据`);
       } else {
         console.error('获取即将上映内容失败:', response.status);
         // API失败时设置空数组，确保UI仍然显示
@@ -343,14 +324,14 @@ const PlayStatsPage: React.FC = () => {
       localStorage.removeItem('moontv_watching_updates');
       localStorage.removeItem('moontv_last_update_check');
 
-      // 清除即将上映缓存
+      // 清除遗留的即将上映缓存（兼容性清理）
       localStorage.removeItem('upcoming_releases_cache');
       localStorage.removeItem('upcoming_releases_cache_time');
 
-      console.log('已清除所有缓存');
+      console.log('已清除所有localStorage缓存');
 
-      // 重新检查追番更新
-      await checkWatchingUpdates();
+      // 🔧 优化：强制刷新追番更新，跳过缓存时间检查
+      await checkWatchingUpdates(true);
       console.log('已重新检查追番更新');
 
       // 重新获取统计数据
@@ -361,7 +342,7 @@ const PlayStatsPage: React.FC = () => {
       const details = getDetailedWatchingUpdates();
       setWatchingUpdates(details);
 
-      // 重新获取即将上映内容
+      // 重新获取即将上映内容（API会使用数据库缓存，速度很快）
       await fetchUpcomingReleases();
       console.log('已重新获取即将上映内容');
 
@@ -417,14 +398,16 @@ const PlayStatsPage: React.FC = () => {
     if (authInfo) {
       fetchStats();
     }
-  }, [authInfo, fetchStats]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authInfo]); // ✅ 只在 authInfo 变化时调用
 
   // 获取即将上映内容
   useEffect(() => {
     if (authInfo) {
       fetchUpcomingReleases();
     }
-  }, [authInfo, fetchUpcomingReleases]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authInfo]); // ✅ 只在 authInfo 变化时调用
 
   // 追番更新检查
   useEffect(() => {
@@ -446,11 +429,10 @@ const PlayStatsPage: React.FC = () => {
       // 监听播放记录更新事件（修复删除记录后页面不立即更新的问题）
       const handlePlayRecordsUpdate = () => {
         console.log('播放记录更新，重新检查 watchingUpdates');
-        // 强制清除缓存，确保立即更新
-        localStorage.removeItem('moontv_watching_updates');
-        localStorage.removeItem('moontv_last_update_check');
-        // 重新检查追番更新状态
-        checkWatchingUpdates().then(() => {
+        // 🔧 优化：使用新的强制清除缓存函数
+        forceClearWatchingUpdatesCache();
+        // 🔧 优化：强制刷新追番更新状态，跳过缓存时间检查
+        checkWatchingUpdates(true).then(() => {
           const details = getDetailedWatchingUpdates();
           setWatchingUpdates(details);
           console.log('watchingUpdates 已更新:', details);
@@ -1163,7 +1145,7 @@ const PlayStatsPage: React.FC = () => {
             /* 个人统计内容 */
             <>
               {/* 个人统计概览 */}
-              <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-8 gap-4 mb-8'>
+              <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 mb-8'>
                 <div className='p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800'>
                   <div className='text-2xl font-bold text-blue-800 dark:text-blue-300'>
                     {formatTime(userStats.totalWatchTime)}
@@ -1244,6 +1226,63 @@ const PlayStatsPage: React.FC = () => {
                   <div className='text-sm text-orange-600 dark:text-orange-400'>
                     常用来源
                   </div>
+                </div>
+                {/* 新集数更新 */}
+                <div
+                  className={`p-4 rounded-lg border transition-all ${
+                    (watchingUpdates?.updatedCount || 0) > 0
+                      ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800'
+                      : 'bg-gray-50 dark:bg-gray-900/20 border-gray-200 dark:border-gray-800'
+                  }`}
+                >
+                  <div className={`text-2xl font-bold ${
+                    (watchingUpdates?.updatedCount || 0) > 0
+                      ? 'text-red-800 dark:text-red-300'
+                      : 'text-gray-800 dark:text-gray-300'
+                  }`}>
+                    {watchingUpdates?.updatedCount || 0}
+                  </div>
+                  <div className={`text-sm ${
+                    (watchingUpdates?.updatedCount || 0) > 0
+                      ? 'text-red-600 dark:text-red-400'
+                      : 'text-gray-600 dark:text-gray-400'
+                  }`}>
+                    新集数更新
+                  </div>
+                  {(watchingUpdates?.updatedCount || 0) > 0 && (
+                    <div className='text-xs text-red-500 dark:text-red-400 mt-1'>
+                      有新集数发布！
+                    </div>
+                  )}
+                </div>
+
+                {/* 继续观看提醒 */}
+                <div
+                  className={`p-4 rounded-lg border transition-all ${
+                    (watchingUpdates?.continueWatchingCount || 0) > 0
+                      ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800'
+                      : 'bg-gray-50 dark:bg-gray-900/20 border-gray-200 dark:border-gray-800'
+                  }`}
+                >
+                  <div className={`text-2xl font-bold ${
+                    (watchingUpdates?.continueWatchingCount || 0) > 0
+                      ? 'text-blue-800 dark:text-blue-300'
+                      : 'text-gray-800 dark:text-gray-300'
+                  }`}>
+                    {watchingUpdates?.continueWatchingCount || 0}
+                  </div>
+                  <div className={`text-sm ${
+                    (watchingUpdates?.continueWatchingCount || 0) > 0
+                      ? 'text-blue-600 dark:text-blue-400'
+                      : 'text-gray-600 dark:text-gray-400'
+                  }`}>
+                    继续观看
+                  </div>
+                  {(watchingUpdates?.continueWatchingCount || 0) > 0 && (
+                    <div className='text-xs text-blue-500 dark:text-blue-400 mt-1'>
+                      有剧集待续看！
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1386,6 +1425,7 @@ const PlayStatsPage: React.FC = () => {
                                 source={series.sourceKey}
                                 id={series.videoId}
                                 onDelete={undefined}
+                                remarks={series.remarks}
                               />
                               {/* 新集数提示光环效果 */}
                               <div className="absolute inset-0 rounded-lg ring-2 ring-red-400 ring-opacity-50 animate-pulse pointer-events-none z-10"></div>
@@ -1418,6 +1458,7 @@ const PlayStatsPage: React.FC = () => {
                                 source={series.sourceKey}
                                 id={series.videoId}
                                 onDelete={undefined}
+                                remarks={series.remarks}
                               />
                               {/* 新集数提示光环效果 */}
                               <div className="absolute inset-0 rounded-lg ring-2 ring-red-400 ring-opacity-50 animate-pulse pointer-events-none z-10"></div>
@@ -1467,6 +1508,7 @@ const PlayStatsPage: React.FC = () => {
                                 source={series.sourceKey}
                                 id={series.videoId}
                                 onDelete={undefined}
+                                remarks={series.remarks}
                               />
                               {/* 继续观看提示光环效果 */}
                               <div className="absolute inset-0 rounded-lg ring-2 ring-blue-400 ring-opacity-50 animate-pulse pointer-events-none z-10"></div>
@@ -1499,6 +1541,7 @@ const PlayStatsPage: React.FC = () => {
                                 source={series.sourceKey}
                                 id={series.videoId}
                                 onDelete={undefined}
+                                remarks={series.remarks}
                               />
                               {/* 继续观看提示光环效果 */}
                               <div className="absolute inset-0 rounded-lg ring-2 ring-blue-400 ring-opacity-50 animate-pulse pointer-events-none z-10"></div>
@@ -1702,7 +1745,7 @@ const PlayStatsPage: React.FC = () => {
           )}
 
           {/* 个人统计概览 */}
-          <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-8 gap-4 mb-8'>
+          <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 mb-8'>
             <div className='p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800'>
               <div className='text-2xl font-bold text-blue-800 dark:text-blue-300'>
                 {formatTime(userStats.totalWatchTime)}
@@ -1982,6 +2025,7 @@ const PlayStatsPage: React.FC = () => {
                             source={series.source_name}
                             id={`${series.title}_${series.year}`}
                             onDelete={undefined}
+                            remarks={series.remarks}
                           />
                           {/* 新集数提示光环效果 */}
                           <div className="absolute inset-0 rounded-lg ring-2 ring-red-400 ring-opacity-50 animate-pulse pointer-events-none z-10"></div>
@@ -2015,6 +2059,7 @@ const PlayStatsPage: React.FC = () => {
                             source={series.source_name}
                             id={`${series.title}_${series.year}`}
                             onDelete={undefined}
+                            remarks={series.remarks}
                           />
                           {/* 新集数提示光环效果 */}
                           <div className="absolute inset-0 rounded-lg ring-2 ring-red-400 ring-opacity-50 animate-pulse pointer-events-none z-10"></div>
@@ -2065,6 +2110,7 @@ const PlayStatsPage: React.FC = () => {
                             source={series.source_name}
                             id={`${series.title}_${series.year}`}
                             onDelete={undefined}
+                            remarks={series.remarks}
                           />
                           {/* 继续观看提示光环效果 */}
                           <div className="absolute inset-0 rounded-lg ring-2 ring-blue-400 ring-opacity-50 animate-pulse pointer-events-none z-10"></div>
@@ -2098,6 +2144,7 @@ const PlayStatsPage: React.FC = () => {
                             source={series.source_name}
                             id={`${series.title}_${series.year}`}
                             onDelete={undefined}
+                            remarks={series.remarks}
                           />
                           {/* 继续观看提示光环效果 */}
                           <div className="absolute inset-0 rounded-lg ring-2 ring-blue-400 ring-opacity-50 animate-pulse pointer-events-none z-10"></div>
