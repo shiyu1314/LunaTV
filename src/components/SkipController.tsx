@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, no-console */
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   deleteSkipConfig,
@@ -41,19 +41,94 @@ export default function SkipController({
   const [newSegment, setNewSegment] = useState<Partial<SkipSegment>>({});
 
   // 新增状态：批量设置模式 - 支持分:秒格式
-  const [batchSettings, setBatchSettings] = useState({
-    openingStart: '0:00',   // 片头开始时间（分:秒格式）
-    openingEnd: '1:30',     // 片头结束时间（分:秒格式，90秒=1分30秒）
-    endingMode: 'remaining', // 片尾模式：'remaining'(剩余时间) 或 'absolute'(绝对时间)
-    endingStart: '2:00',    // 片尾开始时间（剩余时间模式：还剩多少时间开始倒计时；绝对时间模式：从视频开始多长时间）
-    endingEnd: '',          // 片尾结束时间（可选，空表示直接跳转下一集）
-    autoSkip: true,         // 自动跳过开关
-    autoNextEpisode: true,  // 自动下一集开关
+  // 🔑 初始化时直接从 localStorage 读取用户设置，避免重新挂载时重置为默认值
+  const [batchSettings, setBatchSettings] = useState(() => {
+    const savedEnableAutoSkip = typeof window !== 'undefined' ? localStorage.getItem('enableAutoSkip') : null;
+    const savedEnableAutoNextEpisode = typeof window !== 'undefined' ? localStorage.getItem('enableAutoNextEpisode') : null;
+    const userAutoSkip = savedEnableAutoSkip !== null ? JSON.parse(savedEnableAutoSkip) : true;
+    const userAutoNextEpisode = savedEnableAutoNextEpisode !== null ? JSON.parse(savedEnableAutoNextEpisode) : true;
+
+    console.log('🎯 [useState初始化] localStorage原始值:', {
+      savedEnableAutoSkip,
+      savedEnableAutoNextEpisode
+    });
+    console.log('🎯 [useState初始化] 解析后的值:', {
+      userAutoSkip,
+      userAutoNextEpisode
+    });
+
+    return {
+      openingStart: '0:00',   // 片头开始时间（分:秒格式）
+      openingEnd: '1:30',     // 片头结束时间（分:秒格式，90秒=1分30秒）
+      endingMode: 'remaining', // 片尾模式：'remaining'(剩余时间) 或 'absolute'(绝对时间)
+      endingStart: '2:00',    // 片尾开始时间（剩余时间模式：还剩多少时间开始倒计时；绝对时间模式：从视频开始多长时间）
+      endingEnd: '',          // 片尾结束时间（可选，空表示直接跳转下一集）
+      autoSkip: userAutoSkip,         // 🔑 从 localStorage 读取
+      autoNextEpisode: userAutoNextEpisode,  // 🔑 从 localStorage 读取
+    };
   });
+
+  // 🔑 从 localStorage 读取用户全局设置，并监听变化
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    // 读取 localStorage 的函数
+    const loadUserSettings = () => {
+      const savedEnableAutoSkip = localStorage.getItem('enableAutoSkip');
+      const savedEnableAutoNextEpisode = localStorage.getItem('enableAutoNextEpisode');
+      const userAutoSkip = savedEnableAutoSkip !== null ? JSON.parse(savedEnableAutoSkip) : true;
+      const userAutoNextEpisode = savedEnableAutoNextEpisode !== null ? JSON.parse(savedEnableAutoNextEpisode) : true;
+
+      console.log('🔄 [SkipController] 读取用户设置:', { userAutoSkip, userAutoNextEpisode });
+
+      setBatchSettings(prev => ({
+        ...prev,
+        autoSkip: userAutoSkip,
+        autoNextEpisode: userAutoNextEpisode,
+      }));
+    };
+
+    // 初始化时读取一次
+    loadUserSettings();
+
+    // 🔑 监听 storage 事件（其他标签页或窗口的变化）
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'enableAutoSkip' || e.key === 'enableAutoNextEpisode') {
+        console.log('🔄 [SkipController] localStorage 变化:', e.key, e.newValue);
+        loadUserSettings();
+      }
+    };
+
+    // 🔑 监听自定义事件（同一页面内UserMenu的变化）
+    const handleLocalSettingsChange = () => {
+      console.log('🔄 [SkipController] 检测到本地设置变化');
+      loadUserSettings();
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('localStorageChanged', handleLocalSettingsChange);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('localStorageChanged', handleLocalSettingsChange);
+    };
+  }, []);
 
   const lastSkipTimeRef = useRef<number>(0);
   const skipTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const autoSkipTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 🔑 使用 ref 来存储 batchSettings，避免触发不必要的重新渲染
+  const batchSettingsRef = useRef(batchSettings);
+
+  // 🔑 同步 batchSettings 到 ref
+  useEffect(() => {
+    console.log('🔄 [batchSettings变化]:', {
+      autoSkip: batchSettings.autoSkip,
+      autoNextEpisode: batchSettings.autoNextEpisode
+    });
+    batchSettingsRef.current = batchSettings;
+  }, [batchSettings]);
 
   // 拖动相关状态
   const [isDragging, setIsDragging] = useState(false);
@@ -251,11 +326,20 @@ export default function SkipController({
     // 如果是片尾且开启了自动下一集，直接跳转下一集
     if (segment.type === 'ending' && segment.autoNextEpisode && onNextEpisode) {
       console.log('⏭️ 片尾自动跳转下一集');
-      onNextEpisode();
-      // 显示跳过提示
-      if (artPlayerRef.current.notice) {
-        artPlayerRef.current.notice.show = '自动跳转下一集';
+      // 🔑 先暂停视频，防止 video:ended 事件再次触发
+      if (artPlayerRef.current) {
+        if (!artPlayerRef.current.paused) {
+          artPlayerRef.current.pause();
+        }
+        // 显示跳过提示
+        if (artPlayerRef.current.notice) {
+          artPlayerRef.current.notice.show = '自动跳转下一集';
+        }
       }
+      // 延迟执行跳转，确保暂停生效
+      setTimeout(() => {
+        onNextEpisode();
+      }, 100);
     } else {
       // 否则跳到片段结束位置
       const targetTime = segment.end + 1;
@@ -276,6 +360,9 @@ export default function SkipController({
   // 检查当前播放时间是否在跳过区间内
   const checkSkipSegment = useCallback(
     (time: number) => {
+      // 🔑 使用 ref 中的 batchSettings，避免闭包问题
+      const currentBatchSettings = batchSettingsRef.current;
+
       // 如果没有保存的配置，使用 batchSettings 默认配置
       let segments = skipConfig?.segments;
 
@@ -284,21 +371,21 @@ export default function SkipController({
         const tempSegments: SkipSegment[] = [];
 
         // 添加片头配置
-        const openingStart = timeToSeconds(batchSettings.openingStart);
-        const openingEnd = timeToSeconds(batchSettings.openingEnd);
+        const openingStart = timeToSeconds(currentBatchSettings.openingStart);
+        const openingEnd = timeToSeconds(currentBatchSettings.openingEnd);
         if (openingStart < openingEnd) {
           tempSegments.push({
             type: 'opening',
             start: openingStart,
             end: openingEnd,
-            autoSkip: batchSettings.autoSkip,
+            autoSkip: currentBatchSettings.autoSkip,
           });
         }
 
         // 添加片尾配置（如果设置了）
-        if (duration > 0 && batchSettings.endingStart) {
-          const endingStartSeconds = timeToSeconds(batchSettings.endingStart);
-          const endingStart = batchSettings.endingMode === 'remaining'
+        if (duration > 0 && currentBatchSettings.endingStart) {
+          const endingStartSeconds = timeToSeconds(currentBatchSettings.endingStart);
+          const endingStart = currentBatchSettings.endingMode === 'remaining'
             ? duration - endingStartSeconds
             : endingStartSeconds;
 
@@ -306,10 +393,10 @@ export default function SkipController({
             type: 'ending',
             start: endingStart,
             end: duration,
-            autoSkip: batchSettings.autoSkip,
-            autoNextEpisode: batchSettings.autoNextEpisode,
-            mode: batchSettings.endingMode as 'absolute' | 'remaining',
-            remainingTime: batchSettings.endingMode === 'remaining' ? endingStartSeconds : undefined,
+            autoSkip: currentBatchSettings.autoSkip,
+            autoNextEpisode: currentBatchSettings.autoNextEpisode,
+            mode: currentBatchSettings.endingMode as 'absolute' | 'remaining',
+            remainingTime: currentBatchSettings.endingMode === 'remaining' ? endingStartSeconds : undefined,
           });
         }
 
@@ -390,13 +477,41 @@ export default function SkipController({
         }
       }
     },
-    [skipConfig, currentSkipSegment, handleAutoSkip, batchSettings, duration, timeToSeconds]
+    [skipConfig, currentSkipSegment, handleAutoSkip, duration, timeToSeconds] // 🔑 移除 batchSettings 依赖，使用 ref
   );
 
   // 执行跳过
   const handleSkip = useCallback(() => {
     if (!currentSkipSegment || !artPlayerRef.current) return;
 
+    // 如果是片尾且有下一集回调，则播放下一集
+    if (currentSkipSegment.type === 'ending' && onNextEpisode) {
+      setShowSkipButton(false);
+      setCurrentSkipSegment(null);
+
+      if (skipTimeoutRef.current) {
+        clearTimeout(skipTimeoutRef.current);
+      }
+
+      // 🔑 先暂停视频并销毁播放器事件，防止 video:ended 事件再次触发
+      if (artPlayerRef.current) {
+        if (!artPlayerRef.current.paused) {
+          artPlayerRef.current.pause();
+        }
+        // 显示提示
+        if (artPlayerRef.current.notice) {
+          artPlayerRef.current.notice.show = '正在播放下一集...';
+        }
+      }
+
+      // 延迟执行跳转，确保暂停生效
+      setTimeout(() => {
+        onNextEpisode();
+      }, 100);
+      return;
+    }
+
+    // 片头或没有下一集回调时，执行普通跳过
     const targetTime = currentSkipSegment.end + 1; // 跳到片段结束后1秒
     artPlayerRef.current.currentTime = targetTime;
     lastSkipTimeRef.current = Date.now();
@@ -413,7 +528,7 @@ export default function SkipController({
       const segmentName = currentSkipSegment.type === 'opening' ? '片头' : '片尾';
       artPlayerRef.current.notice.show = `已跳过${segmentName}`;
     }
-  }, [currentSkipSegment, artPlayerRef]);
+  }, [currentSkipSegment, artPlayerRef, onNextEpisode]);
 
   // 保存新的跳过片段（单个片段模式）
   const handleSaveSegment = useCallback(async () => {
@@ -589,40 +704,78 @@ export default function SkipController({
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // 计算实际的 segments（处理 remaining 模式）
+  const actualSegments = useMemo(() => {
+    if (!skipConfig?.segments) return [];
+
+    return skipConfig.segments.map(seg => {
+      if (seg.type === 'ending' && seg.mode === 'remaining' && seg.remainingTime && duration > 0) {
+        // 基于当前 duration 重新计算片尾时间
+        return {
+          ...seg,
+          start: duration - seg.remainingTime,
+          end: duration,
+        };
+      }
+      return seg;
+    });
+  }, [skipConfig, duration]);
+
   // 初始化加载配置
   useEffect(() => {
     console.log('🔥 useEffect 触发，准备调用 loadSkipConfig');
     loadSkipConfig();
   }, [loadSkipConfig]);
 
-  // 当 skipConfig 改变时，同步到 batchSettings
+  // 🔑 确保每次 source/id 变化时，都从 localStorage 读取用户全局设置
+  useEffect(() => {
+    const savedEnableAutoSkip = localStorage.getItem('enableAutoSkip');
+    const savedEnableAutoNextEpisode = localStorage.getItem('enableAutoNextEpisode');
+    const userAutoSkip = savedEnableAutoSkip !== null ? JSON.parse(savedEnableAutoSkip) : true;
+    const userAutoNextEpisode = savedEnableAutoNextEpisode !== null ? JSON.parse(savedEnableAutoNextEpisode) : true;
+
+    console.log('🔄 从 localStorage 读取用户设置:', { userAutoSkip, userAutoNextEpisode });
+
+    setBatchSettings(prev => ({
+      ...prev,
+      autoSkip: userAutoSkip,
+      autoNextEpisode: userAutoNextEpisode,
+    }));
+  }, [source, id]); // 切换集数时重新读取用户设置
+
+  // 当 skipConfig 改变时，同步到 batchSettings（但保留用户全局设置）
+  // 🔑 注意：这个 useEffect 只在 skipConfig 改变时触发，不受 duration 影响
   useEffect(() => {
     if (skipConfig && skipConfig.segments.length > 0) {
       // 找到片头和片尾片段
       const openingSegment = skipConfig.segments.find(s => s.type === 'opening');
       const endingSegment = skipConfig.segments.find(s => s.type === 'ending');
 
-      // 更新批量设置状态
-      setBatchSettings(prev => ({
-        ...prev,
-        openingStart: openingSegment ? secondsToTime(openingSegment.start) : '0:00',
-        openingEnd: openingSegment ? secondsToTime(openingSegment.end) : '1:30',
-        endingStart: endingSegment
-          ? (endingSegment.mode === 'remaining' && endingSegment.remainingTime
-              ? secondsToTime(endingSegment.remainingTime)
-              : secondsToTime(duration - endingSegment.start))
-          : '2:00',
-        endingEnd: endingSegment
-          ? (endingSegment.mode === 'remaining' && endingSegment.end < duration
-              ? secondsToTime(duration - endingSegment.end)
-              : '')
-          : '',
-        endingMode: endingSegment?.mode === 'absolute' ? 'absolute' : 'remaining',
-        autoSkip: openingSegment?.autoSkip ?? true,
-        autoNextEpisode: endingSegment?.autoNextEpisode ?? true,
-      }));
+      console.log('🔄 [skipConfig变化] 同步时间字段到 batchSettings，保留 autoSkip/autoNextEpisode');
+
+      // 🔑 只更新时间相关的字段，不更新 autoSkip 和 autoNextEpisode
+      setBatchSettings(prev => {
+        console.log('🔍 [skipConfig变化] 当前 prev.autoSkip:', prev.autoSkip, 'prev.autoNextEpisode:', prev.autoNextEpisode);
+        return {
+          ...prev,
+          openingStart: openingSegment ? secondsToTime(openingSegment.start) : prev.openingStart,
+          openingEnd: openingSegment ? secondsToTime(openingSegment.end) : prev.openingEnd,
+          endingStart: endingSegment
+            ? (endingSegment.mode === 'remaining' && endingSegment.remainingTime
+                ? secondsToTime(endingSegment.remainingTime)
+                : (duration > 0 ? secondsToTime(duration - endingSegment.start) : prev.endingStart))
+            : prev.endingStart,
+          endingEnd: endingSegment
+            ? (endingSegment.mode === 'remaining' && endingSegment.end < duration && duration > 0
+                ? secondsToTime(duration - endingSegment.end)
+                : '')
+            : prev.endingEnd,
+          endingMode: endingSegment?.mode === 'absolute' ? 'absolute' : 'remaining',
+          // 🔑 保持当前的 autoSkip 和 autoNextEpisode 不变（已经通过其他 useEffect 从 localStorage 读取）
+        };
+      });
     }
-  }, [skipConfig, duration, secondsToTime]);
+  }, [skipConfig, duration]); // 🔑 移除 secondsToTime 依赖，避免不必要的触发
 
   // 监听播放时间变化
   useEffect(() => {
@@ -656,6 +809,44 @@ export default function SkipController({
     };
   }, []);
 
+  // 🔑 关闭弹窗的统一处理函数
+  const handleCloseDialog = useCallback(() => {
+    onSettingModeChange?.(false);
+    // 取消时从 localStorage 读取用户设置，不能硬编码默认值
+    const savedEnableAutoSkip = localStorage.getItem('enableAutoSkip');
+    const savedEnableAutoNextEpisode = localStorage.getItem('enableAutoNextEpisode');
+    const userAutoSkip = savedEnableAutoSkip !== null ? JSON.parse(savedEnableAutoSkip) : true;
+    const userAutoNextEpisode = savedEnableAutoNextEpisode !== null ? JSON.parse(savedEnableAutoNextEpisode) : true;
+
+    console.log('❌ [关闭弹窗] 从 localStorage 读取用户设置:', { userAutoSkip, userAutoNextEpisode });
+
+    setBatchSettings({
+      openingStart: '0:00',
+      openingEnd: '1:30',
+      endingMode: 'remaining',
+      endingStart: '2:00',
+      endingEnd: '',
+      autoSkip: userAutoSkip,
+      autoNextEpisode: userAutoNextEpisode,
+    });
+  }, [onSettingModeChange]);
+
+  // 🔑 监听 ESC 键关闭弹窗
+  useEffect(() => {
+    if (!isSettingMode) return;
+
+    const handleEscKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        handleCloseDialog();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscKey);
+    return () => {
+      window.removeEventListener('keydown', handleEscKey);
+    };
+  }, [isSettingMode, handleCloseDialog]);
+
   return (
     <div className="skip-controller">
       {/* 跳过按钮 - 放在播放器内左上角 */}
@@ -669,7 +860,7 @@ export default function SkipController({
               onClick={handleSkip}
               className="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-sm font-medium transition-colors"
             >
-              跳过
+              {currentSkipSegment.type === 'ending' && onNextEpisode ? '下一集 ▶' : '跳过'}
             </button>
           </div>
         </div>
@@ -677,20 +868,50 @@ export default function SkipController({
 
       {/* 设置模式面板 - 增强版批量设置 */}
       {isSettingMode && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999] p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">
-              智能跳过设置
-            </h3>
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[9999] p-4 animate-fade-in"
+          onClick={handleCloseDialog}
+        >
+          <div
+            className="bg-white/95 dark:bg-gray-800/95 backdrop-blur-xl rounded-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-[0_20px_60px_0_rgba(0,0,0,0.4)] border border-white/20 dark:border-gray-700/50 animate-scale-in"
+            style={{
+              backdropFilter: 'blur(20px) saturate(180%)',
+              WebkitBackdropFilter: 'blur(20px) saturate(180%)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 标题栏带关闭按钮 */}
+            <div className="flex items-center justify-between mb-6 border-b border-gray-200/50 dark:border-gray-700/50 pb-4">
+              <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                <span className="text-2xl">⚙️</span>
+                智能跳过设置
+              </h3>
+              <button
+                onClick={handleCloseDialog}
+                className="flex items-center justify-center w-8 h-8 rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 transition-colors"
+                title="关闭 (ESC)"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
 
             {/* 全局开关 */}
-            <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg mb-6">
+            <div className="bg-gradient-to-br from-blue-50/80 to-indigo-50/80 dark:from-blue-900/30 dark:to-indigo-900/30 p-5 rounded-xl mb-6 border border-blue-100/50 dark:border-blue-800/50 shadow-sm backdrop-blur-sm">
               <div className="flex items-center justify-between mb-2">
                 <label className="flex items-center space-x-2">
                   <input
                     type="checkbox"
                     checked={batchSettings.autoSkip}
-                    onChange={(e) => setBatchSettings({...batchSettings, autoSkip: e.target.checked})}
+                    onChange={(e) => {
+                      const newValue = e.target.checked;
+                      setBatchSettings({...batchSettings, autoSkip: newValue});
+                      // 🔑 保存到 localStorage，确保跨集保持
+                      localStorage.setItem('enableAutoSkip', JSON.stringify(newValue));
+                      // 🔑 通知其他组件 localStorage 已更新
+                      window.dispatchEvent(new Event('localStorageChanged'));
+                    }}
                     className="rounded"
                   />
                   <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -703,7 +924,14 @@ export default function SkipController({
                   <input
                     type="checkbox"
                     checked={batchSettings.autoNextEpisode}
-                    onChange={(e) => setBatchSettings({...batchSettings, autoNextEpisode: e.target.checked})}
+                    onChange={(e) => {
+                      const newValue = e.target.checked;
+                      setBatchSettings({...batchSettings, autoNextEpisode: newValue});
+                      // 🔑 保存到 localStorage，确保跨集保持
+                      localStorage.setItem('enableAutoNextEpisode', JSON.stringify(newValue));
+                      // 🔑 通知其他组件 localStorage 已更新
+                      window.dispatchEvent(new Event('localStorageChanged'));
+                    }}
                     className="rounded"
                   />
                   <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -718,53 +946,53 @@ export default function SkipController({
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* 片头设置 */}
-              <div className="space-y-4">
-                <h4 className="font-medium text-gray-900 dark:text-gray-100 border-b pb-2">
-                  🎬 片头设置
+              <div className="space-y-4 bg-gradient-to-br from-green-50/50 to-emerald-50/50 dark:from-green-900/20 dark:to-emerald-900/20 p-4 rounded-xl border border-green-100/50 dark:border-green-800/50 backdrop-blur-sm">
+                <h4 className="font-semibold text-gray-900 dark:text-gray-100 border-b border-green-200/50 dark:border-green-700/50 pb-2 flex items-center gap-2">
+                  <span className="text-xl">🎬</span>
+                  片头设置
                 </h4>
 
                 <div>
-                  <label className="block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300">
+                  <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
                     开始时间 (分:秒)
                   </label>
                   <input
                     type="text"
                     value={batchSettings.openingStart}
                     onChange={(e) => setBatchSettings({...batchSettings, openingStart: e.target.value})}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                    className="w-full px-4 py-2.5 border border-gray-300/50 dark:border-gray-600/50 rounded-lg bg-white/80 dark:bg-gray-700/80 text-gray-900 dark:text-gray-100 backdrop-blur-sm focus:ring-2 focus:ring-green-500/50 focus:border-green-500 transition-all"
                     placeholder="0:00"
                   />
-                  <p className="text-xs text-gray-500 mt-1">格式: 分:秒 (如 0:00)</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5">格式: 分:秒 (如 0:00)</p>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300">
+                  <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
                     结束时间 (分:秒)
                   </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={batchSettings.openingEnd}
-                      onChange={(e) => setBatchSettings({...batchSettings, openingEnd: e.target.value})}
-                      className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                      placeholder="1:30"
-                    />
-                    <button
-                      onClick={markCurrentAsOpeningEnd}
-                      className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium transition-colors whitespace-nowrap"
-                      title="标记当前播放时间为片头结束时间"
-                    >
-                      📍 标记
-                    </button>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-1">格式: 分:秒 (如 1:30) 或点击标记按钮</p>
+                  <input
+                    type="text"
+                    value={batchSettings.openingEnd}
+                    onChange={(e) => setBatchSettings({...batchSettings, openingEnd: e.target.value})}
+                    className="w-full px-4 py-2.5 border border-gray-300/50 dark:border-gray-600/50 rounded-lg bg-white/80 dark:bg-gray-700/80 text-gray-900 dark:text-gray-100 backdrop-blur-sm focus:ring-2 focus:ring-green-500/50 focus:border-green-500 transition-all mb-2"
+                    placeholder="1:30"
+                  />
+                  <button
+                    onClick={markCurrentAsOpeningEnd}
+                    className="w-full px-4 py-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg text-sm font-medium transition-all shadow-md hover:shadow-lg hover:scale-105 backdrop-blur-sm"
+                    title="标记当前播放时间为片头结束时间"
+                  >
+                      📍 标记当前时间
+                  </button>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5">格式: 分:秒 (如 1:30)</p>
                 </div>
               </div>
 
               {/* 片尾设置 */}
-              <div className="space-y-4">
-                <h4 className="font-medium text-gray-900 dark:text-gray-100 border-b pb-2">
-                  🎭 片尾设置
+              <div className="space-y-4 bg-gradient-to-br from-purple-50/50 to-pink-50/50 dark:from-purple-900/20 dark:to-pink-900/20 p-4 rounded-xl border border-purple-100/50 dark:border-purple-800/50 backdrop-blur-sm">
+                <h4 className="font-semibold text-gray-900 dark:text-gray-100 border-b border-purple-200/50 dark:border-purple-700/50 pb-2 flex items-center gap-2">
+                  <span className="text-xl">🎭</span>
+                  片尾设置
                 </h4>
 
                 {/* 片尾模式选择 */}
@@ -805,50 +1033,48 @@ export default function SkipController({
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300">
+                  <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
                     {batchSettings.endingMode === 'remaining' ? '剩余时间 (分:秒)' : '开始时间 (分:秒)'}
                   </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={batchSettings.endingStart}
-                      onChange={(e) => setBatchSettings({...batchSettings, endingStart: e.target.value})}
-                      className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                      placeholder={batchSettings.endingMode === 'remaining' ? '2:00' : '20:00'}
-                    />
-                    <button
-                      onClick={markCurrentAsEndingStart}
-                      className="px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded text-sm font-medium transition-colors whitespace-nowrap"
-                      title="标记当前播放时间为片尾开始时间"
-                    >
-                      📍 标记
-                    </button>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-1">
+                  <input
+                    type="text"
+                    value={batchSettings.endingStart}
+                    onChange={(e) => setBatchSettings({...batchSettings, endingStart: e.target.value})}
+                    className="w-full px-4 py-2.5 border border-gray-300/50 dark:border-gray-600/50 rounded-lg bg-white/80 dark:bg-gray-700/80 text-gray-900 dark:text-gray-100 backdrop-blur-sm focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 transition-all mb-2"
+                    placeholder={batchSettings.endingMode === 'remaining' ? '2:00' : '20:00'}
+                  />
+                  <button
+                    onClick={markCurrentAsEndingStart}
+                    className="w-full px-4 py-2 bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white rounded-lg text-sm font-medium transition-all shadow-md hover:shadow-lg hover:scale-105 backdrop-blur-sm"
+                    title="标记当前播放时间为片尾开始时间"
+                  >
+                    📍 标记当前时间
+                  </button>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5">
                     {batchSettings.endingMode === 'remaining'
-                      ? '当剩余时间达到此值时开始倒计时，或点击标记按钮'
-                      : '从视频开始播放此时间后开始检测片尾，或点击标记按钮'
+                      ? '当剩余时间达到此值时开始倒计时'
+                      : '从视频开始播放此时间后开始检测片尾'
                     }
                   </p>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300">
+                  <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
                     结束时间 (分:秒) - 可选
                   </label>
                   <input
                     type="text"
                     value={batchSettings.endingEnd}
                     onChange={(e) => setBatchSettings({...batchSettings, endingEnd: e.target.value})}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                    className="w-full px-4 py-2.5 border border-gray-300/50 dark:border-gray-600/50 rounded-lg bg-white/80 dark:bg-gray-700/80 text-gray-900 dark:text-gray-100 backdrop-blur-sm focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 transition-all"
                     placeholder="留空直接跳下一集"
                   />
-                  <p className="text-xs text-gray-500 mt-1">空白=直接跳下一集</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5">空白=直接跳下一集</p>
                 </div>
               </div>
             </div>
 
-            <div className="mt-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+            <div className="mt-6 p-5 bg-gradient-to-br from-gray-50/80 to-slate-50/80 dark:from-gray-700/80 dark:to-slate-700/80 rounded-xl border border-gray-200/50 dark:border-gray-600/50 backdrop-blur-sm shadow-inner">
               <div className="text-sm text-gray-600 dark:text-gray-400 space-y-1">
                 <p><strong>当前播放时间:</strong> {secondsToTime(currentTime)}</p>
                 {duration > 0 && (
@@ -870,26 +1096,15 @@ export default function SkipController({
             <div className="flex space-x-3 mt-6">
               <button
                 onClick={handleSaveBatchSettings}
-                className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded font-medium transition-colors"
+                className="flex-1 px-6 py-3 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white rounded-xl font-semibold transition-all shadow-lg hover:shadow-xl hover:scale-105 backdrop-blur-sm"
               >
-                保存智能配置
+                💾 保存智能配置
               </button>
               <button
-                onClick={() => {
-                  onSettingModeChange?.(false);
-                  setBatchSettings({
-                    openingStart: '0:00',
-                    openingEnd: '1:30',
-                    endingMode: 'remaining',
-                    endingStart: '2:00',
-                    endingEnd: '',
-                    autoSkip: true,
-                    autoNextEpisode: true,
-                  });
-                }}
-                className="flex-1 px-4 py-2 bg-gray-500 hover:bg-gray-600 text-white rounded font-medium transition-colors"
+                onClick={handleCloseDialog}
+                className="flex-1 px-6 py-3 bg-gradient-to-r from-gray-400 to-gray-500 hover:from-gray-500 hover:to-gray-600 text-white rounded-xl font-semibold transition-all shadow-lg hover:shadow-xl hover:scale-105 backdrop-blur-sm"
               >
-                取消
+                ❌ 取消
               </button>
             </div>
 
@@ -956,7 +1171,7 @@ export default function SkipController({
       )}
 
       {/* 管理已有片段 - 优化为可拖动 */}
-      {skipConfig && skipConfig.segments && skipConfig.segments.length > 0 && !isSettingMode && (
+      {actualSegments.length > 0 && !isSettingMode && (
         <div
           ref={panelRef}
           onMouseDown={handleMouseDown}
@@ -979,7 +1194,7 @@ export default function SkipController({
               <span className="ml-auto text-xs text-gray-500 dark:text-gray-400">可拖动</span>
             </h4>
             <div className="space-y-1">
-              {skipConfig.segments.map((segment, index) => (
+              {actualSegments.map((segment, index) => (
                 <div
                   key={index}
                   className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-700 rounded text-xs"
@@ -1031,8 +1246,21 @@ export default function SkipController({
             transform: translateY(0);
           }
         }
+        @keyframes scale-in {
+          from {
+            opacity: 0;
+            transform: scale(0.95);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1);
+          }
+        }
         .animate-fade-in {
           animation: fade-in 0.3s ease-out;
+        }
+        .animate-scale-in {
+          animation: scale-in 0.3s ease-out;
         }
       `}</style>
     </div>
