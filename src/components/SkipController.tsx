@@ -746,7 +746,7 @@ export default function SkipController({
   // 当 skipConfig 改变时，同步到 batchSettings（但保留用户全局设置）
   // 🔑 注意：这个 useEffect 只在 skipConfig 改变时触发，不受 duration 影响
   useEffect(() => {
-    if (skipConfig && skipConfig.segments.length > 0) {
+    if (skipConfig && skipConfig.segments && skipConfig.segments.length > 0) {
       // 找到片头和片尾片段
       const openingSegment = skipConfig.segments.find(s => s.type === 'opening');
       const endingSegment = skipConfig.segments.find(s => s.type === 'ending');
