@@ -27,9 +27,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - platform: linux/amd64
-            os: ubuntu-latest
-          - platform: linux/arm64
+          - platform: linux/arm/v7
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
 
